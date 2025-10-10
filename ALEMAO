@@ -1,0 +1,211 @@
+Sub Main()
+
+    ' Verifica se há documento ativo e se é montagem
+    If ThisApplication.ActiveDocument Is Nothing _
+        OrElse Not TypeOf ThisApplication.ActiveDocument Is AssemblyDocument Then
+        MessageBox.Show("É necessário um documento de montagem ativo.", "Erro")
+        Exit Sub
+    End If
+
+    ' Inicia transação para agrupar alterações
+    Dim oTxnMgr As TransactionManager = ThisApplication.TransactionManager
+    Dim oTxn As Transaction = oTxnMgr.StartTransaction(ThisApplication.ActiveDocument, "Sincronizar BOM")
+
+    ' Referências principais
+    Dim oDoc As AssemblyDocument = ThisApplication.ActiveDocument
+    Dim oBOM As BOM = oDoc.ComponentDefinition.BOM
+
+    ' Ativa visualização estruturada
+    Try
+        oBOM.StructuredViewEnabled = True
+    Catch ex As Exception
+        MessageBox.Show("Não foi possível ativar a visualização estruturada da BOM: " & ex.Message, "Erro")
+        oTxn.End()
+        Exit Sub
+    End Try
+
+    oBOM.StructuredViewFirstLevelOnly = False
+    oBOM.StructuredViewDelimiter = "."
+
+    ' Mostra quais views de BOM existem, para diagnosticar nomes válidos
+    Dim sbViews As String = "Views de BOM disponíveis:" & vbCrLf
+    For Each vbv As BOMView In oBOM.BOMViews
+        sbViews &= " - " & vbv.Name & vbCrLf
+    Next
+    MessageBox.Show(sbViews, "Diagnóstico de BOMViews")
+
+    ' Tente localizar o view estruturado pelo nome
+    Dim nomeViewEstruturada As String = "Estruturada"  ' ajuste inicial
+    Dim oStructView As BOMView = Nothing
+
+    ' Primeiro tenta usar esse nome
+    For Each vbv As BOMView In oBOM.BOMViews
+        If vbv.Name = nomeViewEstruturada Then
+            oStructView = vbv
+            Exit For
+        End If
+    Next
+
+    ' Se não encontrou, tenta nomes alternativos
+    If oStructView Is Nothing Then
+        ' Possíveis alternativas
+        Dim alternativas() As String = {"Structured", "Estruturado", "Estruturado (Todos níveis)", "Estruturado Todos Níveis"}
+        For Each alt As String In alternativas
+            For Each vbv As BOMView In oBOM.BOMViews
+                If vbv.Name = alt Then
+                    oStructView = vbv
+                    nomeViewEstruturada = alt
+                    Exit For
+                End If
+            Next
+            If Not oStructView Is Nothing Then Exit For
+        Next
+    End If
+
+    If oStructView Is Nothing Then
+        MessageBox.Show("Não foi possível localizar um BOMView estruturado. Verifique os nomes nos logs anteriores.", "Erro")
+        oTxn.End()
+        Exit Sub
+    End If
+
+    MessageBox.Show("Usando BOMView: " & nomeViewEstruturada, "Info")
+
+    ' Mostra quais colunas esse view possui, para diagnosticar nomes de colunas válidas
+    Dim sbCols As String = "Colunas disponíveis no view """ & nomeViewEstruturada & """:" & vbCrLf
+    ' Vamos pegar uma linha para listar as colunas
+    If oStructView.BOMRows.Count > 0 Then
+        Dim row0 As BOMRow = oStructView.BOMRows.Item(1)
+        ' As propriedades de row0 : pode ter ItemNumber, Quantity, etc. Mas cabeçalhos de coluna visíveis usados pela Sort são nomes de propriedades definidas no BOMView.
+        ' Não há método direto para obter todos os cabeçalhos visíveis, então incluímos nomes comuns para testar
+        sbCols &= " - Item" & vbCrLf
+        sbCols &= " - Part Number" & vbCrLf
+        sbCols &= " - Description" & vbCrLf
+        sbCols &= " - Material" & vbCrLf
+        sbCols &= "(Teste de ordenações...)"
+    End If
+    MessageBox.Show(sbCols, "Diagnóstico de Colunas")
+
+    ' Tente ordenar usando coluna válida
+    ' Ajuste esse nome de coluna conforme o que você viu no diagnóstico
+    Dim nomeColunaItem As String = "Item"  ' exemplo
+    Dim ordenou As Boolean = False
+
+    Try
+        oStructView.Sort(nomeColunaItem, True)
+        ordenou = True
+    Catch ex As Exception
+        MessageBox.Show("Erro ao ordenar por coluna '" & nomeColunaItem & "': " & ex.Message, "Erro Sort")
+    End Try
+
+    If ordenou Then
+        ' Se ordenação funcionou, renumere
+        Try
+            oStructView.Renumber(1, 1)
+        Catch ex As Exception
+            MessageBox.Show("Erro ao renumerar BOM: " & ex.Message, "Erro Renumerar")
+        End Try
+
+        ' Atualiza números de item nos níveis filhos
+        For Each oRow As BOMRow In oStructView.BOMRows
+            If Not oRow.ChildRows Is Nothing Then
+                AtualizarNumerosItem(oRow, oBOM.StructuredViewDelimiter)
+            End If
+        Next
+
+        MessageBox.Show("✅ Ordenação e atualização de números concluída com sucesso.", "Sucesso")
+    Else
+        MessageBox.Show("❌ Não foi possível ordenar. Verifique o nome da coluna de Item Number.", "Falha")
+    End If
+
+    oTxn.End()
+
+End Sub
+
+' Função recursiva que sincroniza os números de item entre montagens e submontagens
+Sub AtualizarNumerosItem(oRowPai As BOMRow, delimitador As String)
+
+    If oRowPai.ChildRows Is Nothing Then Exit Sub
+
+    Dim oBOMSub As BOM = Nothing
+    Try
+        oBOMSub = oRowPai.ComponentDefinitions(1).BOM
+    Catch ex As Exception
+        ' Não conseguiu acessar a submontagem
+        Exit Sub
+    End Try
+
+    If Not oBOMSub.StructuredViewEnabled Then
+        Try
+            oBOMSub.StructuredViewEnabled = True
+        Catch
+            GoTo ProximaLinha
+        End Try
+    End If
+
+    Dim oStructViewSub As BOMView = Nothing
+    Try
+        oStructViewSub = oBOMSub.BOMViews("Structured")
+    Catch
+    End Try
+    If oStructViewSub Is Nothing Then Exit Sub
+
+    For Each oRowFilho As BOMRow In oRowPai.ChildRows
+
+        Dim oRowCorrespondente As BOMRow = EncontrarLinha(oStructViewSub, oRowFilho)
+
+        If Not oRowCorrespondente Is Nothing Then
+            If Not oRowFilho.ChildRows Is Nothing Then
+                DefinirNumeroItemMontagem(oRowFilho, oRowCorrespondente, delimitador)
+
+            ElseIf TypeOf oRowFilho.ComponentDefinitions.Item(1) Is VirtualComponentDefinition Then
+                oRowFilho.ItemNumber = oRowCorrespondente.ItemNumber
+
+            Else
+                oRowFilho.ItemNumber = oRowCorrespondente.ItemNumber
+            End If
+        End If
+
+        If Not oRowFilho.ChildRows Is Nothing Then
+            AtualizarNumerosItem(oRowFilho, delimitador)
+        End If
+
+    Next
+
+ProximaLinha:
+End Sub
+
+Function CompararLinhas(oRow1 As BOMRow, oRow2 As BOMRow) As Boolean
+
+    If oRow1.ComponentDefinitions.Count <> oRow2.ComponentDefinitions.Count Then
+        Return False
+    End If
+
+    For i As Integer = 1 To oRow1.ComponentDefinitions.Count
+        If oRow1.ComponentDefinitions(i).Document.FullDocumentName _
+            <> oRow2.ComponentDefinitions(i).Document.FullDocumentName Then
+            Return False
+        End If
+    Next
+
+    If TypeOf oRow1.ComponentDefinitions(1) Is VirtualComponentDefinition Then
+        Dim partNum1 As String = oRow1.ComponentDefinitions(1).PropertySets("Design Tracking Properties").Item("Part Number").Value
+        Dim partNum2 As String = oRow2.ComponentDefinitions(1).PropertySets("Design Tracking Properties").Item("Part Number").Value
+        If partNum1 <> partNum2 Then Return False
+    End If
+
+    Return True
+End Function
+
+Function EncontrarLinha(oBOMView As BOMView, oRowReferencia As BOMRow) As BOMRow
+    For Each oRow As BOMRow In oBOMView.BOMRows
+        If CompararLinhas(oRowReferencia, oRow) Then
+            Return oRow
+        End If
+    Next
+    Return Nothing
+End Function
+
+Sub DefinirNumeroItemMontagem(oLinhaDestino As BOMRow, oLinhaFonte As BOMRow, delimitador As String)
+    Dim numeroPai As String = oLinhaDestino.Parent.ItemNumber
+    oLinhaDestino.ItemNumber = numeroPai & delimitador & oLinhaFonte.ItemNumber
+End Sub
