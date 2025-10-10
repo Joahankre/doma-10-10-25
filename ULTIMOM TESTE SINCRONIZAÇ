@@ -1,0 +1,212 @@
+Imports Inventor
+Imports System.Windows.Forms
+Imports System.Text
+Imports System.Linq
+
+Sub Main()
+    Dim doc As Document = ThisApplication.ActiveDocument
+    If doc Is Nothing OrElse doc.DocumentType <> DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("Abra uma montagem antes de rodar esta regra.", "Documento inválido", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim asmDoc As AssemblyDocument = CType(doc, AssemblyDocument)
+
+    ' Monta mapa global apenas para leitura
+    Dim mapaGlobal As List(Of Tuple(Of String, String, String)) = ObterMapaCompleto(asmDoc)
+
+    If mapaGlobal.Count = 0 Then
+        MessageBox.Show("Nenhum item encontrado no BOM estruturado da montagem.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Return
+    End If
+
+    ' Sincroniza apenas submontagens (NÃO modifica a montagem principal)
+    SincronizarSubmontagensRecursivo(asmDoc, mapaGlobal, asmDoc.DisplayName)
+
+    ' Exibe resultado
+    ShowFormattedResults(FormatarMapaParaTexto(mapaGlobal))
+    MessageBox.Show("Sincronização concluída com sucesso! A montagem principal foi preservada.", "Sucesso", MessageBoxButtons.OK, MessageBoxIcon.Information)
+End Sub
+
+' === Exibe painel de relatório ===
+Private Sub ShowFormattedResults(message As String)
+    Dim form As New Form With {.Text = "RESULTADO DA SINCRONIZAÇÃO", .Width = 1000, .Height = 600}
+    Dim richText As New RichTextBox With {.Dock = DockStyle.Fill, .ReadOnly = True}
+    richText.AppendText("MAPA DE SINCRONIZAÇÃO:" & vbCrLf & vbCrLf & message)
+    form.Controls.Add(richText)
+    form.ShowDialog()
+End Sub
+
+' === Formata texto para relatório ===
+Private Function FormatarMapaParaTexto(mapa As List(Of Tuple(Of String, String, String))) As String
+    Dim sb As New StringBuilder()
+    Dim col1Width As Integer = 70
+    Dim col2Width As Integer = 30
+    sb.AppendLine("PART NUMBER".PadRight(col1Width) & "ITEM NUMBER".PadRight(col2Width) & "CAMINHO COMPLETO")
+    sb.AppendLine(New String("-"c, col1Width + col2Width + 70))
+
+    For Each item In mapa
+        sb.AppendLine(item.Item1.PadRight(col1Width) & item.Item2.PadRight(col2Width) & item.Item3)
+    Next
+
+    Return sb.ToString()
+End Function
+
+' === Gera o mapa completo a partir da montagem principal ===
+Private Function ObterMapaCompleto(asm As AssemblyDocument) As List(Of Tuple(Of String, String, String))
+    Dim mapa As New List(Of Tuple(Of String, String, String))()
+
+    Try
+        Dim bom As BOM = asm.ComponentDefinition.BOM
+        bom.StructuredViewEnabled = True
+        bom.StructuredViewFirstLevelOnly = False
+
+        Dim view As BOMView = bom.BOMViews.
+            Cast(Of BOMView)().
+            FirstOrDefault(Function(v) v.ViewType = BOMViewTypeEnum.kStructuredBOMViewType)
+
+        If view Is Nothing Then Return mapa
+
+        For Each row As BOMRow In view.BOMRows
+            AdicionarAoMapaRecursivo(row, mapa)
+        Next
+
+    Catch ex As Exception
+        MessageBox.Show("Erro ao construir mapa completo: " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Try
+
+    Return mapa
+End Function
+
+' === Adiciona entradas ao mapa usando FullFileName ===
+Private Sub AdicionarAoMapaRecursivo(row As BOMRow, mapa As List(Of Tuple(Of String, String, String)))
+    Try
+        If row.ComponentDefinitions.Count = 0 Then Exit Sub
+
+        Dim doc As Document = row.ComponentDefinitions.Item(1).Document
+        Dim partNumber As String = TryGetPartNumber(doc)
+        Dim itemNumber As String = row.ItemNumber
+        Dim caminho As String = doc.FullFileName
+
+        mapa.Add(New Tuple(Of String, String, String)(partNumber, itemNumber, caminho))
+
+        If row.ChildRows IsNot Nothing Then
+            For Each child In row.ChildRows
+                AdicionarAoMapaRecursivo(child, mapa)
+            Next
+        End If
+
+    Catch
+        ' Ignora erros individuais
+    End Try
+End Sub
+
+' === Tenta obter PartNumber com fallback ===
+Private Function TryGetPartNumber(doc As Document) As String
+    Try
+        Return doc.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value.ToString()
+    Catch
+        Return "[SEM PARTNUMBER]"
+    End Try
+End Function
+
+' === Extrai mapa local de uma montagem (nível 1 apenas) ===
+Private Function ObterMapaLocal(assemblyDoc As AssemblyDocument) As Dictionary(Of String, String)
+    Dim mapa As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+
+    Try
+        Dim bom As BOM = assemblyDoc.ComponentDefinition.BOM
+        bom.StructuredViewEnabled = True
+        bom.StructuredViewFirstLevelOnly = True
+
+        Dim view As BOMView = bom.BOMViews.Cast(Of BOMView)().
+            FirstOrDefault(Function(v) v.ViewType = BOMViewTypeEnum.kStructuredBOMViewType)
+
+        If view Is Nothing Then Return mapa
+
+        For Each row As BOMRow In view.BOMRows
+            Try
+                If row.ComponentDefinitions.Count = 0 Then Continue For
+                Dim doc As Document = row.ComponentDefinitions.Item(1).Document
+                Dim partNumber As String = TryGetPartNumber(doc)
+                Dim itemNumber As String = row.ItemNumber
+                If Not mapa.ContainsKey(partNumber) Then
+                    mapa(partNumber) = itemNumber
+                End If
+            Catch
+                Continue For
+            End Try
+        Next
+
+    Catch
+    End Try
+
+    Return mapa
+End Function
+
+' === Sincroniza os Item Numbers em submontagens ===
+Private Sub SincronizarItemNumbers(mapaGlobal As List(Of Tuple(Of String, String, String)), asm As AssemblyDocument)
+    Try
+        Dim bom As BOM = asm.ComponentDefinition.BOM
+        bom.StructuredViewEnabled = True
+        bom.StructuredViewFirstLevelOnly = True
+
+        Dim view As BOMView = bom.BOMViews.
+            Cast(Of BOMView)().
+            FirstOrDefault(Function(v) v.ViewType = BOMViewTypeEnum.kStructuredBOMViewType)
+
+        If view Is Nothing Then Return
+
+        For Each row As BOMRow In view.BOMRows
+            Try
+                If row.ComponentDefinitions.Count = 0 Then Continue For
+                Dim doc As Document = row.ComponentDefinitions.Item(1).Document
+                Dim fullPath As String = doc.FullFileName
+                Dim partNumber As String = TryGetPartNumber(doc)
+
+                ' Busca por caminho completo
+                Dim itemNumberCorreto As String = mapaGlobal.
+                    Where(Function(t) t.Item3.Equals(fullPath, StringComparison.OrdinalIgnoreCase)).
+                    Select(Function(t) t.Item2).FirstOrDefault()
+
+                ' Fallback por PartNumber
+                If String.IsNullOrWhiteSpace(itemNumberCorreto) Then
+                    itemNumberCorreto = mapaGlobal.
+                        Where(Function(t) t.Item1 = partNumber).
+                        Select(Function(t) t.Item2).FirstOrDefault()
+                End If
+
+                If Not String.IsNullOrWhiteSpace(itemNumberCorreto) AndAlso row.ItemNumber <> itemNumberCorreto Then
+                    row.ItemNumber = itemNumberCorreto
+                End If
+
+            Catch
+                Continue For
+            End Try
+        Next
+
+    Catch
+    End Try
+End Sub
+
+' === Recursivamente aplica sincronização em submontagens ===
+Private Sub SincronizarSubmontagensRecursivo(asm As AssemblyDocument, mapaGlobal As List(Of Tuple(Of String, String, String)), raizDisplayName As String)
+    Try
+        For Each occ As ComponentOccurrence In asm.ComponentDefinition.Occurrences
+            If occ.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+                Try
+                    Dim subDoc As Document = Nothing
+                    Try
+                        subDoc = ThisApplication.Documents.Item(occ.Definition.Document.FullFileName)
+                    Catch
+                        subDoc = ThisApplication.Documents.Open(occ.Definition.Document.FullFileName, False)
+                    End Try
+
+                    Dim subAsm As AssemblyDocument = TryCast(subDoc, AssemblyDocument)
+                    If subAsm Is Nothing Then Continue For
+
+                    SincronizarItemNumbers(mapaGlobal, subAsm)
+
+                    Try : subAsm.Save2(True) : Catch : End Try
+
+                    ' Chamada rec
