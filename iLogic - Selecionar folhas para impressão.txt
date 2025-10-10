@@ -1,0 +1,108 @@
+﻿Imports System.Windows.Forms
+
+Sub Main()
+    Dim oDoc As DrawingDocument = ThisApplication.ActiveDocument
+    Dim oSheets As Sheets = oDoc.Sheets
+
+    Dim formWidth As Integer = 960
+    Dim formHeight As Integer = 720
+
+    Dim form As New Form()
+    form.Text = "SELECIONE AS FOLHAS PARA IMPRESSÃO"
+    form.Width = formWidth
+    form.Height = formHeight
+    form.StartPosition = FormStartPosition.CenterScreen
+
+    Dim lbl As New Label()
+    lbl.Text = "Marque as folhas que deseja incluir na impressão:"
+    lbl.Left = 20
+    lbl.Top = 20
+    lbl.Width = formWidth - 40
+    lbl.Height = 30
+    form.Controls.Add(lbl)
+
+    Dim sheetListHeight As Integer = formHeight - 260
+    Dim sheetList As New CheckedListBox()
+    sheetList.Left = 10
+    sheetList.Top = lbl.Bottom + 10
+    sheetList.Width = formWidth - 40
+    sheetList.Height = sheetListHeight
+    sheetList.CheckOnClick = True
+    form.Controls.Add(sheetList)
+
+    For Each sheet As Sheet In oSheets
+        sheetList.Items.Add(Sheet.Name, Not Sheet.ExcludeFromPrinting)
+    Next
+
+    Dim btnSelectAll As New Button()
+    btnSelectAll.Text = "Selecionar Todas"
+    btnSelectAll.Left = 60
+    btnSelectAll.Top = sheetList.Bottom + 10
+    btnSelectAll.Width = 180
+    btnSelectAll.Height = 35
+    AddHandler btnSelectAll.Click, Sub()
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            sheetList.SetItemChecked(i, True)
+        Next
+    End Sub
+    form.Controls.Add(btnSelectAll)
+
+    Dim btnDeselectAll As New Button()
+    btnDeselectAll.Text = "Desmarcar Todas"
+    btnDeselectAll.Left = btnSelectAll.Right + 20
+    btnDeselectAll.Top = btnSelectAll.Top
+    btnDeselectAll.Width = 180
+    btnDeselectAll.Height = 35
+    AddHandler btnDeselectAll.Click, Sub()
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            sheetList.SetItemChecked(i, False)
+        Next
+    End Sub
+    form.Controls.Add(btnDeselectAll)
+
+    ' Botão Selecionar por Prefixo
+    Dim btnSelectByPrefix As New Button()
+    btnSelectByPrefix.Text = "Selecionar por Prefixo"
+    btnSelectByPrefix.Left = btnDeselectAll.Right + 20
+    btnSelectByPrefix.Top = btnSelectAll.Top
+    btnSelectByPrefix.Width = 200
+    btnSelectByPrefix.Height = 35
+    AddHandler btnSelectByPrefix.Click, Sub()
+        Dim prefixo As String = InputBox("Digite o prefixo (mínimo 2 caracteres):", "Selecionar por Prefixo")
+        If prefixo.Length >= 2 Then
+            For i As Integer = 0 To sheetList.Items.Count - 1
+                If sheetList.Items(i).ToString().ToUpper().StartsWith(prefixo.ToUpper()) Then
+                    sheetList.SetItemChecked(i, True)
+                End If
+            Next
+        Else
+            MessageBox.Show("Digite pelo menos 2 caracteres.", "Prefixo Inválido", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End If
+    End Sub
+    form.Controls.Add(btnSelectByPrefix)
+
+    Dim btnOk As New Button()
+    btnOk.Text = "Confirmar"
+    btnOk.Left = formWidth \ 2 - 100
+    btnOk.Top = btnSelectAll.Bottom + 10
+    btnOk.Width = 200
+    btnOk.Height = 40
+    AddHandler btnOk.Click, Sub()
+        form.DialogResult = DialogResult.OK
+        form.Close()
+    End Sub
+    form.Controls.Add(btnOk)
+
+    Dim result As DialogResult = form.ShowDialog()
+
+    If result = DialogResult.OK Then
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            Dim sheetName As String = sheetList.Items(i).ToString()
+            Dim selectedSheet As Sheet = oSheets.Item(sheetName)
+            selectedSheet.ExcludeFromPrinting = Not sheetList.GetItemChecked(i)
+        Next
+        MessageBox.Show("Configuração de impressão atualizada com sucesso!", "Sucesso")
+    Else
+        MessageBox.Show("Ação cancelada pelo usuário.", "Cancelado")
+    End If
+End Sub

@@ -1,0 +1,141 @@
+Sub Main()
+    Dim oDoc As DrawingDocument = ThisDoc.Document
+    Dim oSheets As Sheets = oDoc.Sheets
+
+    ' Dicionário para armazenar modelo -> lista de páginas onde aparece
+    Dim modelPages As New Dictionary(Of String, List(Of Integer))
+
+    ' --- Criar a barra de progresso ---
+    Dim oProgressBar As Inventor.ProgressBar
+    Dim oProgressSteps As Integer
+    Dim oProgressStep As Integer = 0
+    Dim oProgressStaticText As String = "Atualizando propriedades: passo "
+
+    ' Etapa 1: Mapear todos os modelos referenciados por vistas nas folhas
+    For sheetIndex As Integer = 1 To oSheets.Count
+        Dim oSheet As Sheet = oSheets.Item(sheetIndex)
+
+        For Each oView As DrawingView In oSheet.DrawingViews
+            Dim oReferencedDoc As Document = Nothing
+            Dim oModelDoc As Document = Nothing
+
+            Try
+                oReferencedDoc = oView.ReferencedDocumentDescriptor.ReferencedDocument
+                oModelDoc = oReferencedDoc
+
+                ' Se for .ipn (presentation), buscar o modelo real (.iam/.ipt)
+                If oReferencedDoc.DocumentType = DocumentTypeEnum.kPresentationDocumentObject Then
+                    Dim ipnDoc As PresentationDocument = CType(oReferencedDoc, PresentationDocument)
+                    oModelDoc = ipnDoc.ReferencedDocumentDescriptor.ReferencedDocument
+                End If
+
+                Dim oModelName As String = oModelDoc.DisplayName
+
+                If Not modelPages.ContainsKey(oModelName) Then
+                    modelPages(oModelName) = New List(Of Integer)
+                End If
+
+                If Not modelPages(oModelName).Contains(sheetIndex) Then
+                    modelPages(oModelName).Add(sheetIndex)
+                End If
+
+            Catch ex As Exception
+                ' Ignora vistas sem documento referenciado
+            End Try
+        Next
+    Next
+
+    ' Etapa 2: Criar e atualizar a barra de progresso
+    oProgressSteps = modelPages.Count
+    oProgressBar = ThisApplication.CreateProgressBar(False, oProgressSteps, "Atualizando propriedades")
+    oProgressBar.Message = oProgressStaticText & oProgressStep & " de " & oProgressSteps
+    oProgressBar.UpdateProgress()
+
+    ' Etapa 3: Atualizar a propriedade "Nº Pág" para cada modelo
+    For Each kvp As KeyValuePair(Of String, List(Of Integer)) In modelPages
+        Dim modelName As String = kvp.Key
+        Dim paginas As List(Of Integer) = kvp.Value
+        Dim textoPaginas As String = AgruparPaginas(paginas)
+
+        Try
+            Try
+    ' Tentar abrir o documento com base no nome
+    Dim docRef As Document = Nothing
+
+    ' Verifica se o documento já está aberto
+    For Each openDoc As Document In ThisApplication.Documents
+        If openDoc.DisplayName = modelName Then
+            docRef = openDoc
+            Exit For
+        End If
+    Next
+
+    ' Se não estiver aberto, tenta abrir (opcional)
+    If docRef Is Nothing Then
+        ' Tenta abrir o documento pelo nome (se for possível identificar o caminho completo)
+        ' Aqui você pode tentar mapear pelo path, se tiver guardado isso antes
+        Throw New Exception("Documento '" & modelName & "' não está aberto ou acessível.")
+    End If
+
+    ' Verificar se é membro do Content Center
+    If docRef.IsContentMember Then
+        ' Ignorar ou logar separadamente
+        Continue For
+    End If
+
+    ' Verifica se é ReadOnly (opcional)
+    If docRef.ReadOnly Then
+        Throw New Exception("O documento está em modo somente leitura.")
+    End If
+
+    ' Atribuir propriedade personalizada
+    iProperties.Value(modelName, "Custom", "Nº Pág") = textoPaginas
+
+Catch ex As Exception
+    'MessageBox.Show("Erro ao atualizar propriedade para '" & modelName & "':" & vbCrLf & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+End Try
+
+        Catch ex As Exception
+            'MessageBox.Show("Erro ao atualizar propriedade para " & modelName & ":" & vbCrLf & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+
+        oProgressStep += 1
+        oProgressBar.Message = oProgressStaticText & oProgressStep & " de " & oProgressSteps
+        oProgressBar.UpdateProgress()
+    Next
+
+    oProgressBar.Close()
+
+    MessageBox.Show("Propriedade 'Nº Pág' atualizada com sucesso para todos os modelos referenciados.", "Concluído", MessageBoxButtons.OK, MessageBoxIcon.Information)
+End Sub
+
+' Função auxiliar para agrupar páginas (1,2,3,5,6,9 → "1-3,5-6,9")
+Function AgruparPaginas(paginas As List(Of Integer)) As String
+    paginas.Sort()
+    Dim resultado As New List(Of String)
+    Dim inicio As Integer = paginas(0)
+    Dim fim As Integer = paginas(0)
+
+    For i As Integer = 1 To paginas.Count - 1
+        If paginas(i) = fim + 1 Then
+            fim = paginas(i)
+        Else
+            If inicio = fim Then
+                resultado.Add(CStr(inicio))
+            Else
+                resultado.Add(inicio & "-" & fim)
+            End If
+            inicio = paginas(i)
+            fim = paginas(i)
+        End If
+    Next
+
+    ' Adiciona o último grupo
+    If inicio = fim Then
+        resultado.Add(CStr(inicio))
+    Else
+        resultado.Add(inicio & "-" & fim)
+    End If
+
+    Return String.Join(",", resultado)
+End Function

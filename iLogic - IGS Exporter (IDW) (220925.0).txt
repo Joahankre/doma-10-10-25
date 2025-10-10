@@ -1,0 +1,246 @@
+﻿Sub Main()
+    Dim oDoc As DrawingDocument = ThisApplication.ActiveDocument
+
+    ' Verificar se o documento é um desenho
+    If oDoc.DocumentType <> DocumentTypeEnum.kDrawingDocumentObject Then
+        MessageBox.Show("Este não é um documento de desenho.")
+        Return
+    End If
+
+    ' === FORMULÁRIO DE SELEÇÃO DE FOLHAS PARA EXPORTAÇÃO IGES ===
+    Dim frmSelecao As New System.Windows.Forms.Form With {
+        .Text = "Selecione as folhas para exportar IGES",
+        .Width = 600,
+        .Height = 620,
+        .StartPosition = FormStartPosition.CenterScreen,
+        .FormBorderStyle = FormBorderStyle.Sizable
+    }
+
+    Dim lblInstrucao As New System.Windows.Forms.Label With {
+        .Text = "Digite o prefixo e clique em 'Filtrar':",
+        .Top = 10,
+        .Left = 10,
+        .Width = 560
+    }
+    frmSelecao.Controls.Add(lblInstrucao)
+
+    Dim txtPrefixo As New System.Windows.Forms.TextBox With {
+        .Top = 35,
+        .Left = 10,
+        .Width = 400
+    }
+    frmSelecao.Controls.Add(txtPrefixo)
+
+    Dim btnFiltrar As New System.Windows.Forms.Button With {
+        .Text = "Filtrar",
+        .Top = 33,
+        .Left = 420,
+        .Width = 150
+    }
+    frmSelecao.Controls.Add(btnFiltrar)
+
+    Dim lstFolhas As New System.Windows.Forms.CheckedListBox With {
+        .Top = 70,
+        .Left = 10,
+        .Width = 560,
+        .Height = 360,
+        .CheckOnClick = True,
+        .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
+    }
+    frmSelecao.Controls.Add(lstFolhas)
+
+    Dim btnSelecionarTodos As New System.Windows.Forms.Button With {
+        .Text = "Selecionar Todos",
+        .Top = 440,
+        .Left = 10,
+        .Width = 270,
+        .Height = 30
+    }
+    frmSelecao.Controls.Add(btnSelecionarTodos)
+
+    Dim btnDesmarcarTodos As New System.Windows.Forms.Button With {
+        .Text = "Desmarcar Todos",
+        .Top = 440,
+        .Left = 300,
+        .Width = 270,
+        .Height = 30
+    }
+    frmSelecao.Controls.Add(btnDesmarcarTodos)
+
+    Dim btnOk As New System.Windows.Forms.Button With {
+        .Text = "Confirmar",
+        .Top = 480,
+        .Left = 10,
+        .Width = 560,
+        .Height = 30
+    }
+    frmSelecao.Controls.Add(btnOk)
+
+    ' Sub para atualizar lista com base no prefixo
+    Dim SubAtualizarLista As Action = Sub()
+        Dim prefixoBusca = txtPrefixo.Text.Trim()
+        lstFolhas.Items.Clear()
+        For Each oSheet In oDoc.Sheets
+            If oSheet.DrawingViews.Count > 0 AndAlso oSheet.Name.StartsWith(prefixoBusca, StringComparison.OrdinalIgnoreCase) Then
+                lstFolhas.Items.Add(oSheet.Name)
+            End If
+        Next
+    End Sub
+
+    AddHandler btnFiltrar.Click, Sub()
+        SubAtualizarLista()
+        If lstFolhas.Items.Count = 0 Then
+            MessageBox.Show("Nenhuma folha encontrada com o prefixo '" & txtPrefixo.Text.Trim() & "'.", "Aviso")
+        End If
+    End Sub
+
+    AddHandler btnSelecionarTodos.Click, Sub()
+        For i As Integer = 0 To lstFolhas.Items.Count - 1
+            lstFolhas.SetItemChecked(i, True)
+        Next
+    End Sub
+
+    AddHandler btnDesmarcarTodos.Click, Sub()
+        For i As Integer = 0 To lstFolhas.Items.Count - 1
+            lstFolhas.SetItemChecked(i, False)
+        Next
+    End Sub
+
+    AddHandler btnOk.Click, Sub()
+        If lstFolhas.CheckedItems.Count = 0 Then
+            MessageBox.Show("Selecione ao menos uma folha.", "Aviso")
+            Return
+        End If
+        frmSelecao.DialogResult = DialogResult.OK
+        frmSelecao.Close()
+    End Sub
+
+    SubAtualizarLista()
+
+    If frmSelecao.ShowDialog() <> DialogResult.OK Then
+        Return
+    End If
+
+    ' Coletar nomes das folhas selecionadas
+    Dim folhasSelecionadas As New List(Of String)
+    For Each item In lstFolhas.CheckedItems
+        folhasSelecionadas.Add(item.ToString())
+    Next
+
+    ' === CONTINUAÇÃO DO PROCESSO PADRÃO IGES ===
+
+    ' Prefixo do nome
+    Dim prefixo As String = InputBox("Insira o prefixo para o nome do arquivo IGES:", "Inserir Prefixo")
+    If String.IsNullOrEmpty(prefixo) Then
+        MessageBox.Show("Prefixo inválido. A exportação não será realizada.")
+        Return
+    End If
+
+    ' === ABRE FORMULÁRIO DE SELEÇÃO DE PASTA ===
+Dim folderDialog As New System.Windows.Forms.FolderBrowserDialog With {
+    .Description = "Selecione a pasta onde os arquivos IGES serão salvos",
+    .ShowNewFolderButton = True
+}
+
+If folderDialog.ShowDialog() <> DialogResult.OK Then
+    MessageBox.Show("Nenhuma pasta foi selecionada. A exportação foi cancelada.")
+    Return
+End If
+
+Dim igsFolder As String = folderDialog.SelectedPath
+
+    ' Tradutor IGES
+    Dim oIGESTranslator As TranslatorAddIn = ThisApplication.ApplicationAddIns.ItemById("{90AF7F44-0C01-11D5-8E83-0010B541CD80}")
+    If oIGESTranslator Is Nothing Then
+        MessageBox.Show("Não foi possível acessar o tradutor IGES.")
+        Return
+    End If
+
+    ' Contexto e opções
+    Dim oContext As TranslationContext = ThisApplication.TransientObjects.CreateTranslationContext
+    Dim oOptions As NameValueMap = ThisApplication.TransientObjects.CreateNameValueMap
+    If oIGESTranslator.HasSaveCopyAsOptions(ThisApplication.ActiveDocument, oContext, oOptions) Then
+        oOptions.Value("GeometryType") = 0  ' 0 = Superfícies
+        oOptions.Value("SolidFaceType") = 0 ' 0 = NURBS
+        oOptions.Value("SurfaceType") = 1   ' 1 = 144 (Recortado)
+        oContext.Type = IOMechanismEnum.kFileBrowseIOMechanism
+    End If
+
+    ' Loop pelas folhas selecionadas
+    For Each drawSheet As Sheet In oDoc.Sheets
+        If Not folhasSelecionadas.Contains(drawSheet.Name) Then Continue For
+
+        For Each drawingView As DrawingView In drawSheet.DrawingViews
+            If DrawingView.ReferencedDocumentDescriptor IsNot Nothing Then
+                Dim oModel As Document = DrawingView.ReferencedDocumentDescriptor.ReferencedDocument
+
+                If oModel IsNot Nothing AndAlso oModel.DocumentType = DocumentTypeEnum.kPartDocumentObject Then
+
+                    ' Garantir que o modelo esteja carregado diretamente
+                    Dim modelPath As String = oModel.FullFileName
+                    If String.IsNullOrEmpty(modelPath) OrElse Not System.IO.File.Exists(modelPath) Then
+                        MessageBox.Show("Modelo não encontrado para a vista: " & DrawingView.Name)
+                        Continue For
+                    End If
+
+                    ' Abrir modelo diretamente
+                    Dim modelDoc As PartDocument = ThisApplication.Documents.Open(modelPath, True)
+
+                    ' Salvar caso haja alterações
+                    If modelDoc.Dirty Then
+                        modelDoc.Save()
+                    End If
+
+                    ' Captura e formata número da página
+                    Dim sheetName As String = drawSheet.Name
+                    Dim pageNumber As String = sheetName.Substring(sheetName.LastIndexOf(":") + 1)
+                    Dim tempInt As Integer
+                    Dim formattedPageNumber As String
+                    If Integer.TryParse(pageNumber, tempInt) Then
+                        formattedPageNumber = tempInt.ToString("D3")
+                    Else
+                        formattedPageNumber = "000"
+                    End If
+
+                    ' Quantidade personalizada
+                    Dim qtdePersonalizada As String = "000"
+                    Try
+                        qtdePersonalizada = modelDoc.PropertySets.Item("User Defined Properties").Item("QTDE PERSONALIZADA").Value.ToString()
+                    Catch
+                    End Try
+                    Dim formattedQtde As String = qtdePersonalizada.PadLeft(3, "0"c) & "X"
+
+                    ' === Capturar parâmetros do modelo (cm → mm) e formatar corretamente ===
+                    Dim dimensao1 As String = "00", dimensao2 As String = "00", dimensao3 As String = "0.00"
+                    Try
+                        Dim pG_H As Double = modelDoc.ComponentDefinition.Parameters.Item("G_H").Value
+                        Dim pG_W As Double = modelDoc.ComponentDefinition.Parameters.Item("G_W").Value
+                        Dim pG_T As Double = modelDoc.ComponentDefinition.Parameters.Item("G_T").Value
+
+                        dimensao1 = (pG_H * 10).ToString("00")
+                        dimensao2 = (pG_W * 10).ToString("00")
+                        dimensao3 = (pG_T * 10).ToString("0.00")
+                    Catch
+                    End Try
+
+                    ' Nome do IGES atualizado com pasta "IGS"
+                    Dim igesFileName As String = System.IO.Path.Combine(igsFolder, prefixo & "-" & formattedPageNumber & "-" & dimensao1 & "X" & dimensao2 & "X#" & dimensao3 & "-" & formattedQtde & ".igs")
+
+                    ' Exportar IGES
+                    Dim oData As DataMedium = ThisApplication.TransientObjects.CreateDataMedium
+                    oData.FileName = igesFileName
+                    Try
+                        oIGESTranslator.SaveCopyAs(modelDoc, oContext, oOptions, oData)
+                    Catch ex As Exception
+                        MessageBox.Show("Erro ao exportar: " & ex.Message & vbCrLf & "Peça: " & modelDoc.DisplayName)
+                    End Try
+
+                    ' Fecha o modelo
+                    modelDoc.Close(True)
+                End If
+            End If
+        Next
+    Next
+
+    MessageBox.Show("Exportação concluída.")
+End Sub

@@ -1,0 +1,304 @@
+Sub Main()
+    Dim oDoc As DrawingDocument = ThisApplication.ActiveDocument
+
+    If oDoc.DocumentType <> DocumentTypeEnum.kDrawingDocumentObject Then
+        MessageBox.Show("Este não é um documento de desenho.")
+        Return
+    End If
+
+    ' === FORMULÁRIO DE SELEÇÃO DE FOLHAS PARA EXPORTAÇÃO DXF ===
+    Dim frmSelecao As New System.Windows.Forms.Form With {
+        .Text = "Selecione as folhas para exportar DXF",
+        .Width = 600,
+        .Height = 620,
+        .StartPosition = FormStartPosition.CenterScreen,
+        .FormBorderStyle = FormBorderStyle.Sizable
+    }
+
+    Dim lblInstrucao As New System.Windows.Forms.Label With {
+        .Text = "Digite o prefixo e clique em 'Filtrar':",
+        .Top = 10,
+        .Left = 10,
+        .Width = 560
+    }
+    frmSelecao.Controls.Add(lblInstrucao)
+
+    Dim txtPrefixo As New System.Windows.Forms.TextBox With {
+        .Top = 35,
+        .Left = 10,
+        .Width = 400
+    }
+    frmSelecao.Controls.Add(txtPrefixo)
+
+    Dim btnFiltrar As New System.Windows.Forms.Button With {
+        .Text = "Filtrar",
+        .Top = 33,
+        .Left = 420,
+        .Width = 150
+    }
+    frmSelecao.Controls.Add(btnFiltrar)
+
+    Dim lstFolhas As New System.Windows.Forms.CheckedListBox With {
+        .Top = 70,
+        .Left = 10,
+        .Width = 560,
+        .Height = 360,
+        .CheckOnClick = True,
+        .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
+    }
+    frmSelecao.Controls.Add(lstFolhas)
+
+    Dim btnSelecionarTodos As New System.Windows.Forms.Button With {
+        .Text = "Selecionar Todos",
+        .Top = 440,
+        .Left = 10,
+        .Width = 270,
+        .Height = 30
+    }
+    frmSelecao.Controls.Add(btnSelecionarTodos)
+
+    Dim btnDesmarcarTodos As New System.Windows.Forms.Button With {
+        .Text = "Desmarcar Todos",
+        .Top = 440,
+        .Left = 300,
+        .Width = 270,
+        .Height = 30
+    }
+    frmSelecao.Controls.Add(btnDesmarcarTodos)
+
+    Dim btnOk As New System.Windows.Forms.Button With {
+        .Text = "Confirmar",
+        .Top = 480,
+        .Left = 10,
+        .Width = 560,
+        .Height = 30
+    }
+    frmSelecao.Controls.Add(btnOk)
+
+    ' Sub para atualizar lista com base no prefixo
+    Dim SubAtualizarLista As Action = Sub()
+        Dim prefixo = txtPrefixo.Text.Trim()
+        lstFolhas.Items.Clear()
+        For Each oSheet In oDoc.Sheets
+            If oSheet.DrawingViews.Count > 0 AndAlso oSheet.Name.StartsWith(prefixo, StringComparison.OrdinalIgnoreCase) Then
+                lstFolhas.Items.Add(oSheet.Name)
+            End If
+        Next
+    End Sub
+
+    AddHandler btnFiltrar.Click, Sub()
+        SubAtualizarLista()
+        If lstFolhas.Items.Count = 0 Then
+            MessageBox.Show("Nenhuma folha encontrada com o prefixo '" & txtPrefixo.Text.Trim() & "'.", "Aviso")
+        End If
+    End Sub
+
+    AddHandler btnSelecionarTodos.Click, Sub()
+        For i As Integer = 0 To lstFolhas.Items.Count - 1
+            lstFolhas.SetItemChecked(i, True)
+        Next
+    End Sub
+
+    AddHandler btnDesmarcarTodos.Click, Sub()
+        For i As Integer = 0 To lstFolhas.Items.Count - 1
+            lstFolhas.SetItemChecked(i, False)
+        Next
+    End Sub
+
+    AddHandler btnOk.Click, Sub()
+        If lstFolhas.CheckedItems.Count = 0 Then
+            MessageBox.Show("Selecione ao menos uma folha.", "Aviso")
+            Return
+        End If
+        frmSelecao.DialogResult = DialogResult.OK
+        frmSelecao.Close()
+    End Sub
+
+    SubAtualizarLista()
+
+    If frmSelecao.ShowDialog() <> DialogResult.OK Then
+        Return
+    End If
+
+    ' Coletar nomes das folhas selecionadas
+    Dim folhasSelecionadas As New List(Of String)
+    For Each item In lstFolhas.CheckedItems
+        folhasSelecionadas.Add(item.ToString())
+    Next
+
+    ' === CONTINUAÇÃO DO PROCESSO PADRÃO ===
+
+    ' Pedir pasta de destino para salvar os DXFs
+    Dim pastaDestino As String = SelecionarPasta()
+    If String.IsNullOrEmpty(pastaDestino) Then
+        MessageBox.Show("Exportação cancelada pelo usuário.")
+        Return
+    End If
+
+    ' Perguntar código do cliente (prefixo)
+    Dim prefixoCliente As String = InputBox("Informe o código do cliente/máquina:", "Código Cliente")
+    If String.IsNullOrWhiteSpace(prefixoCliente) Then
+        MessageBox.Show("Prefixo inválido.")
+        Return
+    End If
+
+    Dim listaSheetMetal As New List(Of String)
+
+    ' Coletar arquivos Sheet Metal apenas das folhas selecionadas
+    For Each drawSheet As Sheet In oDoc.Sheets
+        If Not folhasSelecionadas.Contains(drawSheet.Name) Then Continue For
+
+        For Each drawView As DrawingView In drawSheet.DrawingViews
+            Dim refDoc As Document = Nothing
+            Try
+                refDoc = drawView.ReferencedDocumentDescriptor.ReferencedDocument
+            Catch
+                Continue For
+            End Try
+
+            If refDoc IsNot Nothing AndAlso refDoc.DocumentType = DocumentTypeEnum.kPartDocumentObject Then
+                If refDoc.DocumentSubType.DocumentSubTypeID = "{9C464203-9BAE-11D3-8BAD-0060B0CE6BB4}" Then
+                    Dim caminho As String = refDoc.FullFileName
+                    If Not listaSheetMetal.Contains(caminho) Then
+                        listaSheetMetal.Add(caminho)
+                    End If
+                End If
+            End If
+        Next
+    Next
+
+    If listaSheetMetal.Count = 0 Then
+        MessageBox.Show("Nenhuma peça Sheet Metal encontrada nas folhas selecionadas.")
+        Return
+    End If
+
+    ' Loop pelos arquivos Sheet Metal
+    For Each caminhoSM As String In listaSheetMetal
+        Try
+            Dim partDoc As PartDocument = ThisApplication.Documents.Open(caminhoSM, True)
+            partDoc.Activate()
+
+            Dim smDef As SheetMetalComponentDefinition = TryCast(partDoc.ComponentDefinition, SheetMetalComponentDefinition)
+            If smDef Is Nothing Then
+                MessageBox.Show("O arquivo " & partDoc.DisplayName & " não é um componente Sheet Metal.")
+                partDoc.Close(False)
+                Continue For
+            End If
+
+            ' Abrir ou editar o Flat Pattern
+            If Not smDef.HasFlatPattern Then
+                smDef.Unfold()
+            Else
+                smDef.FlatPattern.Edit()
+            End If
+
+            ' Centralizar vista
+            ThisApplication.ActiveView.Fit()
+
+            ' Solicitar ao usuário para selecionar a face desejada
+            ThisApplication.StatusBarText = "Selecione a face do Flat Pattern para exportar como DXF"
+            Dim entidadeSelecionada As Object = Nothing
+
+            Try
+                entidadeSelecionada = ThisApplication.CommandManager.Pick(SelectionFilterEnum.kPartFaceFilter, _
+                    "Clique na face do Flat Pattern para exportar para DXF")
+            Catch ex As Exception
+                MessageBox.Show("Seleção cancelada. Pulando esta peça.")
+                partDoc.Close(False)
+                Continue For
+            End Try
+
+            If entidadeSelecionada Is Nothing Then
+                MessageBox.Show("Nenhuma face foi selecionada. Pulando esta peça.")
+                partDoc.Close(False)
+                Continue For
+            End If
+
+            partDoc.SelectSet.Clear()
+            partDoc.SelectSet.Select(entidadeSelecionada)
+
+            ' Obter o nome da folha correspondente à peça
+            Dim sheetName As String = "000"
+            For Each drawSheet As Sheet In oDoc.Sheets
+                If Not folhasSelecionadas.Contains(drawSheet.Name) Then Continue For
+                For Each drawView As DrawingView In drawSheet.DrawingViews
+                    Dim refDoc As Document = Nothing
+                    Try
+                        refDoc = drawView.ReferencedDocumentDescriptor.ReferencedDocument
+                    Catch
+                    End Try
+                    If refDoc IsNot Nothing AndAlso refDoc.FullFileName = caminhoSM Then
+                        sheetName = drawSheet.Name
+                        Exit For
+                    End If
+                Next
+                If sheetName <> "000" Then Exit For
+            Next
+
+            Dim pageNumber As String = "000"
+            If sheetName.Contains(":") Then
+                pageNumber = sheetName.Substring(sheetName.LastIndexOf(":") + 1).PadLeft(3, "0"c)
+            Else
+                pageNumber = "001"
+            End If
+
+            ' Obter quantidade personalizada
+            Dim qtdePersonalizada As String = "001"
+            Try
+                qtdePersonalizada = partDoc.PropertySets.Item("User Defined Properties").Item("QTDE PERSONALIZADA").Value.ToString()
+            Catch
+            End Try
+            Dim formattedQtde As String = qtdePersonalizada.PadLeft(3, "0"c) & "X"
+
+            ' Obter espessura
+            Dim thickness As String = " "
+            Try
+                thickness = partDoc.PropertySets.Item("User Defined Properties").Item("Thickness").Value.ToString()
+            Catch
+                thickness = "0.00"
+            End Try
+            Dim formattedThickness As String = thickness.Replace(" mm", " ").Trim()
+
+            ' Montar nome final
+            Dim nomeFinal As String = prefixoCliente & "-" & pageNumber & "-#" & formattedThickness & "-" & formattedQtde & ".dxf"
+            nomeFinal = nomeFinal.Replace(" ", "_")
+
+            Dim caminhoCompletoDXF As String = System.IO.Path.Combine(pastaDestino, nomeFinal)
+
+            ' Definir caminho do DXF via evento interno
+            ThisApplication.CommandManager.PostPrivateEvent(kFileNameEvent, caminhoCompletoDXF)
+
+            ' Executar comando nativo GeomToDXFCommand
+            Dim oCtrlDef As ButtonDefinition = ThisApplication.CommandManager.ControlDefinitions.Item("GeomToDXFCommand")
+            oCtrlDef.Execute()
+            MessageBox.Show("DXF exportado com sucesso!" & vbCrLf & _
+                "Arquivo: " & nomeFinal & vbCrLf & _
+                "Local: " & pastaDestino, "Exportação DXF")
+
+            ThisApplication.StatusBarText = "DXF exportado: " & nomeFinal
+
+            partDoc.Close(True)
+
+        Catch ex As Exception
+            MessageBox.Show("Erro ao processar: " & caminhoSM & vbCrLf & ex.Message, "Erro")
+        End Try
+    Next
+
+    MessageBox.Show("Exportação DXF concluída para todas as peças Sheet Metal selecionadas.", "Concluído")
+End Sub
+
+' Função para pedir pasta destino ao usuário
+Function SelecionarPasta() As String
+    Dim pastaSelecionada As String = " "
+    Try
+        Dim dialog As New System.Windows.Forms.FolderBrowserDialog()
+        dialog.Description = "Selecione a pasta para salvar os arquivos DXF"
+        dialog.ShowNewFolderButton = True
+        If dialog.ShowDialog() = System.Windows.Forms.DialogResult.OK Then
+            pastaSelecionada = dialog.SelectedPath
+        End If
+    Catch ex As Exception
+        MessageBox.Show("Erro ao selecionar pasta: " & ex.Message)
+    End Try
+    Return pastaSelecionada
+End Function

@@ -1,0 +1,89 @@
+Sub Main()
+    ' Verifica se este documento é uma montagem.
+    Dim oDoc As Document = ThisApplication.ActiveDocument
+
+    If oDoc.DocumentType <> kAssemblyDocumentObject Then
+        MessageBox.Show("Esta regra só pode ser executada em um arquivo de montagem - saindo da regra...", "iLogic")
+        Return
+    End If
+
+    ' Solicita multiplicador ao usuário
+    Dim input As String = InputBox("Digite a quantidade de vezes que este projeto será produzido:", "Multiplicador de Projeto", "1")
+    If Not IsNumeric(input) Then
+        MessageBox.Show("Valor inválido. Use apenas números.", "Erro")
+        Return
+    End If
+
+    Dim multiplicador As Integer = CInt(input)
+    If multiplicador < 1 Then
+        MessageBox.Show("O multiplicador deve ser maior ou igual a 1.", "Erro")
+        Return
+    End If
+
+    ' Nome da propriedade personalizada
+    Dim oBOMQTY As String = "QTDE PERSONALIZADA"
+
+    ' Executa a rotina principal com multiplicador
+    Call AtualizarQuantidadePersonalizada(oBOMQTY, multiplicador)
+End Sub
+
+' Rotina para atualizar quantidades com multiplicador
+Sub AtualizarQuantidadePersonalizada(oBOMQTY As String, multiplicador As Integer)
+    Dim openDoc As Document = ThisDoc.Document
+    Dim refDocs As DocumentsEnumerator = openDoc.AllReferencedDocuments
+
+    ' Barra de progresso
+    Dim oProgressBar As Inventor.ProgressBar
+    Dim oProgressSteps As Integer = refDocs.Count
+    Dim oProgressStep As Integer = 0
+    Dim oProgressStaticText As String = "Atualizando propriedades: Etapa "
+
+    oProgressBar = ThisApplication.CreateProgressBar(False, oProgressSteps, "Quantidade de Itens e Submontagens")
+    oProgressBar.Message = oProgressStaticText & oProgressStep & " de " & oProgressSteps
+    oProgressBar.UpdateProgress
+
+    ' Processa cada documento referenciado
+    For Each docFile As Document In refDocs
+        Dim FNamePos As Integer = InStrRev(docFile.FullFileName, "\", -1)
+        Dim docFName As String = Mid(docFile.FullFileName, FNamePos + 1)
+
+        If docFile.IsModifiable = True Then
+            Try
+                Dim assemblyDoc As AssemblyDocument = openDoc
+                Dim assemblyDef As AssemblyComponentDefinition = assemblyDoc.ComponentDefinition
+                Dim partQty As Object = assemblyDef.Occurrences.AllReferencedOccurrences(docFile)
+
+                Dim qtdeTotal As Integer = partQty.Count * multiplicador
+
+                ' Atualiza iProperty personalizada
+                Try
+                    If qtdeTotal <> iProperties.Value(docFName, "Custom", oBOMQTY) Then
+                        iProperties.Value(docFName, "Custom", oBOMQTY) = qtdeTotal
+                    End If
+                Catch
+                    iProperties.Value(docFName, "Custom", oBOMQTY) = qtdeTotal
+                End Try
+
+            Catch
+                ' Ignora documentos com erro
+            End Try
+        End If
+
+        ' Atualiza progresso
+        oProgressStep += 1
+        oProgressBar.Message = oProgressStaticText & oProgressStep & " de " & oProgressSteps
+        oProgressBar.UpdateProgress
+    Next
+
+    ' Atualiza o campo no próprio arquivo de montagem
+    Try
+        Dim oASSYParam As Object = iProperties.Value("Custom", oBOMQTY)
+    Catch
+        iProperties.Value("Custom", oBOMQTY) = multiplicador
+    End Try
+
+    oProgressBar.Close()
+    iLogicVb.UpdateWhenDone = True
+
+    MessageBox.Show("Multiplicador = " & multiplicador, "Concluído")
+End Sub

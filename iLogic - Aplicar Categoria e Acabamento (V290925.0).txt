@@ -1,0 +1,522 @@
+﻿
+Imports Inventor
+Imports System.Windows.Forms
+ 
+' ============================================================
+' iLogic – Gerenciamento de BOM em Montagens
+' Developed by Kreimeier & Machado
+' Objetivo: Selecionar componentes de montagem a partir da BOM
+'           e aplicar propriedades de Categoria e Acabamento
+' ============================================================
+
+Sub Main()
+    ' Verifica se o documento ativo é uma montagem
+    If ThisApplication.ActiveDocumentType <> DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("Abra uma montagem (.iam) antes de rodar esta regra.", 
+                        "Gerenciamento de BOM", 
+                        MessageBoxButtons.OK, 
+                        MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+
+    ' Criar formulário principal
+    Dim frmSelecao As New Form With {
+        .Text = "Developed by Kreimeier & Machado - Gerenciamento de Modelos – Seleção",
+        .Width = 650,
+        .Height = 850,
+        .StartPosition = FormStartPosition.CenterScreen
+    }
+
+    ' Painel principal
+    Dim mainPanel As New Panel With {.Dock = DockStyle.Fill}
+    frmSelecao.Controls.Add(mainPanel)
+
+    ' TreeView
+    Dim treeModelos As New TreeView With {
+        .Dock = DockStyle.Fill,
+        .CheckBoxes = True
+    }
+    mainPanel.Controls.Add(treeModelos)
+
+    ' Painel inferior de botões (vertical, estilo anterior)
+Dim panelBotoes As New Panel With {
+    .Dock = DockStyle.Bottom,
+    .Height = 120
+}
+frmSelecao.Controls.Add(panelBotoes)
+
+' Botão: Confirmar
+Dim btnConfirmar As New Button With {
+    .Text = "Confirmar Seleção",
+    .Dock = DockStyle.Top,
+    .Height = 35
+}
+AddHandler btnConfirmar.Click, Sub()
+                                   frmSelecao.DialogResult = DialogResult.OK
+                                   frmSelecao.Close()
+                               End Sub
+
+' Botão: Desmarcar Todos
+Dim btnDesmarcarTodos As New Button With {
+    .Text = "Desmarcar Todos",
+    .Dock = DockStyle.Top,
+    .Height = 35
+}
+AddHandler btnDesmarcarTodos.Click, Sub()
+                                        AlterarSelecaoTodos(treeModelos.Nodes, False)
+                                    End Sub
+
+' Botão: Marcar Todos
+Dim btnMarcarTodos As New Button With {
+    .Text = "Marcar Todos",
+    .Dock = DockStyle.Top,
+    .Height = 35
+}
+AddHandler btnMarcarTodos.Click, Sub()
+                                     AlterarSelecaoTodos(treeModelos.Nodes, True)
+                                 End Sub
+
+' Adiciona os botões ao painel (ordem de empilhamento: último aparece em cima)
+panelBotoes.Controls.AddRange({btnConfirmar, btnDesmarcarTodos, btnMarcarTodos})
+
+
+    ' Preencher TreeView com a BOM
+    AtualizarArvoreBOM_Montagem(treeModelos, oAsmDoc)
+
+    ' Exibir formulário
+    If frmSelecao.ShowDialog() <> DialogResult.OK Then Return
+
+    ' Obter documentos selecionados
+    Dim modelosSelecionados As New List(Of Document)
+    ObterDocumentosSelecionados(treeModelos.Nodes, modelosSelecionados)
+
+    If modelosSelecionados.Count = 0 Then
+        MessageBox.Show("Nenhum modelo foi selecionado.", 
+                        "Gerenciamento de BOM", 
+                        MessageBoxButtons.OK, 
+                        MessageBoxIcon.Information)
+        Return
+    End If
+
+    ' Categorias disponíveis
+    Dim categoriasDisponiveis As New List(Of String) From {
+    "27 - INTERNO - CORTE LASER CH",
+    "47 - INTERNO - CORTE LASER TB",
+	"28 - INTERNO - DOBRA",
+    "30 - INTERNO - SERRA FITA",
+    "33 - INTERNO - USINAGEM (TORNO & FRESA)",
+    "29 - INTERNO - MONTAGEM / SOLDA",
+	"32 - INTERNO - MONTAGEM FINAL",
+    "38 - INTERNO - ELÉTRICA / AUTOMAÇÃO",
+    "42 - EXTERNO - USINAGEM – POLÍMEROS",
+	"46 - EXTERNO - USINAGEM – INOX",
+    "43 - EXTERNO - USINAGEM – ALUMÍNIO",
+    "44 - EXTERNO - USINAGEM – POLICARBONATO",
+    "45 - EXTERNO - USINAGEM – ELETROFUSÃO"
+	}
+
+
+    ' Acabamentos disponíveis
+    Dim acabamentosDisponiveis As New List(Of String) From {
+        "JATEADO", 
+		"TREME-TREME",
+		"ESCOVADO",
+        "POLIDO",
+        "USINADO",
+        "DECAPADO",
+        "NATURAL",
+        "NATURAL / DECAPADO",
+        "NATURAL / USINADO",
+		"PINTADO",
+		"GALVANIZADO A FRIO",
+        "N/A"
+		}
+
+    ' Aplicar propriedades
+    For Each oDoc As Document In modelosSelecionados
+        Try
+            ThisApplication.Documents.Open(oDoc.FullFileName, True).Activate()
+        Catch ex As Exception
+            MessageBox.Show("Erro ao abrir o modelo: " & oDoc.DisplayName & vbCrLf & ex.Message,
+                            "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Continue For
+        End Try
+
+        Dim docSummaryProps As PropertySet
+        Try
+            docSummaryProps = oDoc.PropertySets.Item("Inventor Document Summary Information")
+        Catch ex As Exception
+            MessageBox.Show("Erro ao acessar propriedades de " & oDoc.DisplayName & vbCrLf & ex.Message,
+                            "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Continue For
+        End Try
+
+        ' Obter valores atuais das propriedades
+Dim valorCategoriaAtual As String = "N/A"
+Dim valorAcabamentoAtual As String = "N/A"
+
+Try : valorCategoriaAtual = oDoc.PropertySets.Item("Inventor Document Summary Information").Item("Category").Value : Catch : End Try
+Try : valorAcabamentoAtual = oDoc.PropertySets.Item("Inventor Summary Information").Item("Keywords").Value : Catch : End Try
+
+' Seleção de Categorias (com valor atual exibido)
+Dim categoriasSelecionadas = CustomMultiSelectListBox(
+    "Nome: " & oDoc.DisplayName,
+    categoriasDisponiveis,
+    "Selecionar Categorias",
+    valorCategoriaAtual)
+If categoriasSelecionadas.Count = 0 Then Continue For
+
+' Seleção de Acabamentos (com valor atual exibido)
+Dim acabamentosSelecionados = CustomMultiSelectListBox(
+    "Nome: " & oDoc.DisplayName,
+    acabamentosDisponiveis,
+    "Selecionar Acabamentos",
+    valorAcabamentoAtual)
+If acabamentosSelecionados.Count = 0 Then Continue For
+
+
+        ' Gravar Categoria
+        Try
+            Dim categoriaFinal = String.Join("; ", categoriasSelecionadas)
+            Dim categoryProp As Inventor.Property
+            Try
+                categoryProp = docSummaryProps.Item("Category")
+            Catch
+                categoryProp = docSummaryProps.Add("", "Category")
+            End Try
+            categoryProp.Value = categoriaFinal
+        Catch ex As Exception
+            MessageBox.Show("Erro ao salvar Categoria em: " & oDoc.DisplayName & vbCrLf & ex.Message)
+        End Try
+
+      ' Gravar Acabamento em "Keywords"
+Try
+    Dim acabamentoTexto As String = String.Join("; ", acabamentosSelecionados)
+
+    ' Acessa o PropertySet correto: "Inventor Summary Information"
+    Dim summaryProps As PropertySet = oDoc.PropertySets.Item("Inventor Summary Information")
+
+    ' Verifica se a propriedade "Keywords" existe
+    Dim keywordsProp As Inventor.Property
+    Try
+        keywordsProp = summaryProps.Item("Keywords")
+    Catch
+        keywordsProp = summaryProps.Add("", "Keywords")
+    End Try
+
+    ' Atribui o valor do acabamento
+    keywordsProp.Value = acabamentoTexto
+
+Catch ex As Exception
+    MessageBox.Show("Erro ao salvar 'Keywords' em: " & oDoc.DisplayName & vbCrLf & ex.Message,
+                    "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+End Try
+
+
+        oDoc.Save()
+        oDoc.Close(True)
+    Next
+End Sub
+
+' ============================================================
+' Funções auxiliares
+' ============================================================
+
+Sub AtualizarArvoreBOM_Montagem(treeView As TreeView, asmDoc As AssemblyDocument)
+    treeView.Nodes.Clear()
+    Dim bomRows As BOMRowsEnumerator = GetBOMRowsFromAssembly(asmDoc)
+
+    If bomRows IsNot Nothing Then
+        For Each row As BOMRow In bomRows
+            AddBOMRowNode(Row, treeView.Nodes)
+        Next
+        OrdenarTreeNodes(treeView.Nodes)
+        treeView.ExpandAll()
+    Else
+        MessageBox.Show("Não foi possível obter a BOM da montagem.", 
+                        "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End If
+End Sub
+
+Function GetBOMRowsFromAssembly(asmDoc As AssemblyDocument) As BOMRowsEnumerator
+    Try
+        Dim bom As BOM = asmDoc.ComponentDefinition.BOM
+        bom.StructuredViewEnabled = True
+        bom.StructuredViewFirstLevelOnly = False
+
+        For Each view As BOMView In bom.BOMViews
+            If View.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
+                Return View.BOMRows
+            End If
+        Next
+    Catch ex As Exception
+        MessageBox.Show("Erro ao acessar a BOM: " & ex.Message, "Erro")
+    End Try
+    Return Nothing
+End Function
+
+Sub AddBOMRowNode(row As BOMRow, parent As TreeNodeCollection)
+    Static docPathsAdicionados As New HashSet(Of String)
+
+    Try
+        If row.ComponentDefinitions IsNot Nothing AndAlso row.ComponentDefinitions.Count > 0 Then
+            Dim def = row.ComponentDefinitions.Item(1)
+            If TypeOf def Is PartComponentDefinition AndAlso CType(def, PartComponentDefinition).IsContentMember Then Return
+            If def.BOMStructure <> BOMStructureEnum.kNormalBOMStructure Then Return
+        End If
+
+        Dim docPath As String = ""
+        Dim partName As String = ""
+        Dim itemName As String = row.ItemNumber
+
+        Try
+            If row.ComponentDefinitions IsNot Nothing AndAlso row.ComponentDefinitions.Count > 0 Then
+                Dim doc = row.ComponentDefinitions.Item(1).Document
+                docPath = doc.FullFileName
+
+                ' Verifica se o caminho já foi adicionado
+                If docPathsAdicionados.Contains(docPath) Then Return
+                docPathsAdicionados.Add(docPath)
+
+                Try
+                    partName = doc.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value
+                Catch
+                End Try
+            End If
+        Catch
+        End Try
+
+        Dim labelNumber As String = If(partName <> "", partName, itemName)
+
+' Tentar extrair a propriedade "Category"
+Dim categoriaRaw As String = ""
+Dim categoriaCodigo As String = "🔘 N/A" ' Valor padrão
+
+Try
+    Dim doc = row.ComponentDefinitions.Item(1).Document
+    categoriaRaw = doc.PropertySets.Item("Inventor Document Summary Information").Item("Category").Value
+Catch
+    categoriaRaw = ""
+End Try
+
+' Aplicar lógica para extrair o código da categoria
+If InStr(categoriaRaw, " - ") > 0 Then
+    Dim parts() As String = Split(categoriaRaw, " - ")
+    categoriaCodigo = Trim(parts(0)) ' Pega apenas o número/código antes do " - "
+ElseIf Trim(categoriaRaw) <> "" Then
+    categoriaCodigo = Trim(categoriaRaw)
+End If
+
+' Texto final do nó com a categoria
+Dim nodeText As String = String.Format(" {0} - [ {1} ] - {2}  ", categoriaCodigo, itemName, labelNumber)
+
+
+        Dim tag = Tuple.Create(docPath, itemName, labelNumber)
+        Dim node As New TreeNode(nodeText) With {
+            .Tag = tag,
+            .Name = itemName
+        }
+        parent.Add(node)
+
+        If row.ChildRows IsNot Nothing AndAlso row.ChildRows.Count > 0 Then
+            For Each child As BOMRow In row.ChildRows
+                AddBOMRowNode(child, node.Nodes)
+            Next
+        End If
+    Catch
+    End Try
+End Sub
+
+
+Sub OrdenarTreeNodes(nodes As TreeNodeCollection)
+    Dim tempList As New List(Of TreeNode)
+    For Each node As TreeNode In nodes
+        tempList.Add(node)
+    Next
+
+    tempList.Sort(Function(a, b) CompararHierarquia(a.Name, b.Name))
+
+    nodes.Clear()
+    For Each node As TreeNode In tempList
+        nodes.Add(node)
+        If node.Nodes.Count > 0 Then
+            OrdenarTreeNodes(node.Nodes)
+        End If
+    Next
+End Sub
+
+Function CompararHierarquia(a As String, b As String) As Integer
+    Dim numA As Integer = 0
+    Dim numB As Integer = 0
+    Integer.TryParse(a, numA)
+    Integer.TryParse(b, numB)
+    Return numA.CompareTo(numB)
+End Function
+
+Sub ObterDocumentosSelecionados(nodes As TreeNodeCollection, modelosSelecionados As List(Of Document))
+    For Each node As TreeNode In nodes
+        If node.Checked And node.Tag IsNot Nothing Then
+            Dim tag = CType(node.Tag, Tuple(Of String, String, String))
+            Dim docPath As String = tag.Item1
+            If Not String.IsNullOrEmpty(docPath) Then
+                Try
+                    Dim doc As Document = ThisApplication.Documents.Open(docPath, False)
+                    modelosSelecionados.Add(doc)
+                Catch
+                End Try
+            End If
+        End If
+        If node.Nodes.Count > 0 Then
+            ObterDocumentosSelecionados(node.Nodes, modelosSelecionados)
+        End If
+    Next
+End Sub
+
+Sub AlterarSelecaoTodos(nodes As TreeNodeCollection, selecionado As Boolean)
+    For Each node As TreeNode In nodes
+        node.Checked = selecionado
+        If node.Nodes.Count > 0 Then
+            AlterarSelecaoTodos(node.Nodes, selecionado)
+        End If
+    Next
+End Sub
+
+Function CustomMultiSelectListBox(prompt As String, options As List(Of String), title As String, valorAtual As String) As List(Of String)
+    Dim selected As New List(Of String)
+
+    Dim frm As New Form With {
+        .Text = title,
+        .Width = 420,
+        .Height = 520,
+        .StartPosition = FormStartPosition.Manual,
+        .Left = 1500,
+        .Top = 200
+    }
+
+    Dim layout As New TableLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .RowCount = 5,
+        .ColumnCount = 1
+    }
+
+    layout.RowStyles.Add(New RowStyle(SizeType.Absolute, 50)) ' Linha 0: Prompt
+    layout.RowStyles.Add(New RowStyle(SizeType.Absolute, 35)) ' Linha 1: Valor atual
+    layout.RowStyles.Add(New RowStyle(SizeType.Percent, 100)) ' Linha 2: Lista
+    layout.RowStyles.Add(New RowStyle(SizeType.Absolute, 45)) ' Linha 3: Botão girar
+    layout.RowStyles.Add(New RowStyle(SizeType.Absolute, 45)) ' Linha 4: Botão confirmar
+
+    ' Linha 0: Título do formulário
+    Dim lblPrompt As New Label With {
+        .Text = prompt,
+        .Dock = DockStyle.Fill,
+        .Padding = New Padding(10)
+    }
+    layout.Controls.Add(lblPrompt, 0, 0)
+
+    ' Linha 1: Valor atual da propriedade
+    Dim lblValorAtual As New Label With {
+        .Text = "Valor atual: " & valorAtual,
+        .Dock = DockStyle.Fill,
+        .Padding = New Padding(10)}
+    layout.Controls.Add(lblValorAtual, 0, 1)
+
+    ' Linha 2: Lista de opções
+    Dim clb As New CheckedListBox With {
+        .Dock = DockStyle.Fill,
+        .CheckOnClick = True
+    }
+
+    For Each opt In options
+        Dim isChecked As Boolean = valorAtual.Contains(opt)
+        clb.Items.Add(opt, isChecked)
+    Next
+    layout.Controls.Add(clb, 0, 2)
+
+    ' Linha 3: Botão para rotacionar visualização
+    Dim btnGirar As New Button With {
+        .Text = "Rotacionar Montagem",
+        .Dock = DockStyle.Fill
+    }
+    AddHandler btnGirar.Click, Sub()
+                                    RotacionarMontagem360()
+                                End Sub
+    layout.Controls.Add(btnGirar, 0, 3)
+
+    ' Linha 4: Botão de confirmação
+    Dim btnOk As New Button With {
+        .Text = "Confirmar",
+        .Dock = DockStyle.Fill
+    }
+    AddHandler btnOk.Click, Sub()
+                                frm.DialogResult = DialogResult.OK
+                                frm.Close()
+                            End Sub
+    layout.Controls.Add(btnOk, 0, 4)
+
+    frm.AcceptButton = btnOk
+    frm.Controls.Add(layout)
+
+    ' Exibir o formulário e retornar seleções
+    If frm.ShowDialog() = DialogResult.OK Then
+        For Each idx As Integer In clb.CheckedIndices
+            selected.Add(clb.Items(idx).ToString())
+        Next
+    End If
+
+    Return selected
+End Function
+
+Sub RotacionarMontagem360()
+    Try
+        Dim oDoc As Document = ThisApplication.ActiveDocument
+        Dim oView As Inventor.View = ThisApplication.ActiveView
+        Dim oCamera As Camera = oView.Camera
+
+        ' Captura o ponto de foco atual (centro do modelo)
+        Dim oTarget As Point = oCamera.Target
+
+        ' Define a distância da câmera ao modelo (raio da órbita)
+        Dim distancia As Double = oCamera.Eye.DistanceTo(oTarget)
+
+        ' Define vetor "para cima"
+        Dim upVec As Double() = {0, 0, 1} ' Z para cima
+
+        ' Gira de 0 a 360 graus em etapas
+        For anguloGraus As Integer = 0 To 359 Step 320
+            Dim anguloRad As Double = anguloGraus * Math.PI / 180.0
+
+            ' Cálculo da posição da câmera ao redor do modelo
+            Dim x As Double = oTarget.X + distancia * Math.Cos(anguloRad)
+            Dim y As Double = oTarget.Y + distancia * Math.Sin(anguloRad)
+            Dim z As Double = oCamera.Eye.Z ' Mantém a altura constante
+
+            ' Aplica nova posição da câmera
+            InventorVb.SetViewCamera(
+                ViewCameraOption.FitExtents,
+                New Double() {x, y, z},
+                New Double() {oTarget.X, oTarget.Y, oTarget.Z},
+                upVec,
+                New Double() {0, 0, 0}
+            )
+
+            ' Atualiza a interface para permitir animação visual
+            ThisApplication.UserInterfaceManager.DoEvents()
+        Next
+
+                ' === Definir a câmera manualmente para vista isométrica ===
+        Dim Camera As Camera = ThisApplication.ActiveView.Camera
+
+        Camera.ViewOrientationType = ViewOrientationTypeEnum.kIsoTopRightViewOrientation
+        Camera.Fit()
+        Camera.Apply()
+
+
+    Catch ex As Exception
+        MessageBox.Show("Erro ao girar o modelo com SetViewCamera: " & ex.Message,
+                        "Erro de Visualização",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error)
+    End Try
+End Sub

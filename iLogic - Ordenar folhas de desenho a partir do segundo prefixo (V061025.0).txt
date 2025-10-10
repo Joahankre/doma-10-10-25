@@ -1,0 +1,133 @@
+Sub Main()
+    ' Tenta obter o documento ativo como um DrawingDocument
+    Dim drawingDoc As DrawingDocument = TryCast(ThisDoc.Document, DrawingDocument)
+
+    If drawingDoc Is Nothing Then
+        MsgBox("Erro: Documento de desenho não encontrado.")
+        Exit Sub
+    End If
+
+    ' Declara a variável folha como Sheet (sem valor inicial, será usada para armazenar folhas individuais do desenho)
+    Dim folha As Sheet = Nothing
+    
+    ' Cria uma lista vazia chamada sheetsList, que será usada para armazenar as folhas do desenho
+    Dim sheetsList As New List(Of Sheet)
+
+    ' Tenta obter o painel de navegador do desenho
+    Dim browserPane As BrowserPane = Nothing
+
+    Try
+        ' Acessa o painel correto "Model"
+        browserPane = drawingDoc.BrowserPanes.Item("Modelo")
+    Catch ex As Exception
+        MsgBox("Erro ao obter o painel de navegador: " & ex.Message)
+        Exit Sub
+    End Try
+
+    If browserPane Is Nothing Then
+        MsgBox("Erro: Painel de navegador 'Model' não encontrado.")
+        Exit Sub
+    End If
+
+    ' Itera sobre todas as folhas no documento de desenho e as adiciona à lista sheetsList
+    For Each folha In drawingDoc.Sheets
+        sheetsList.Add(folha) ' Adiciona cada folha à lista
+    Next
+    
+    ' Ordena a lista de folhas com base no número extraído dos nomes das folhas
+    sheetsList.Sort(AddressOf Comparador)
+
+    ' Itera sobre as folhas na lista ordenada
+    For Each folha In sheetsList
+        ' Obtém o nó do navegador correspondente à folha atual
+        Dim sheetNode As BrowserNode = Nothing
+        Try
+            sheetNode = browserPane.GetBrowserNodeFromObject(folha)
+        Catch ex As Exception
+            MsgBox("Erro ao obter o nó da folha: " & ex.Message)
+            Continue For
+        End Try
+
+        ' Verifica se o nó da folha foi obtido com sucesso
+        If sheetNode Is Nothing Then
+            MsgBox("Erro: Nó da folha não encontrado.")
+            Continue For
+        End If
+
+        ' Obtém o último nó do navegador, que é o nó de topo no painel de navegador
+        Dim bottomNode As BrowserNode = Nothing
+        Try
+            bottomNode = browserPane.TopNode.BrowserNodes.Item(browserPane.TopNode.BrowserNodes.Count)
+        Catch ex As Exception
+            MsgBox("Erro ao obter o último nó: " & ex.Message)
+            Continue For
+        End Try
+
+        ' Verifica se o nó final foi obtido corretamente
+        If bottomNode Is Nothing Then
+            MsgBox("Erro: Último nó não encontrado.")
+            Continue For
+        End If
+
+        ' Reorganiza o nó da folha atual para o final da lista de nós, colocando-a no final
+        Try
+            browserPane.Reorder(bottomNode, False, sheetNode)
+        Catch ex As Exception
+            MsgBox("Erro ao reorganizar o nó: " & ex.Message)
+            Continue For
+        End Try
+    Next
+End Sub
+
+Private Function Comparador(x As Sheet, y As Sheet) As Integer
+    Dim numeroX As List(Of Integer) = ExtrairSegundoNumero(x.Name)
+    Dim numeroY As List(Of Integer) = ExtrairSegundoNumero(y.Name)
+
+    ' Comparação parte a parte (1 < 1.1 < 1.2 < 2.0)
+    For i As Integer = 0 To Math.Min(numeroX.Count, numeroY.Count) - 1
+        Dim comparacao As Integer = numeroX(i).CompareTo(numeroY(i))
+        If comparacao <> 0 Then
+            Return comparacao
+        End If
+    Next
+
+    ' Se iguais até onde comparou, o menor é o que tem menos níveis
+    Return numeroX.Count.CompareTo(numeroY.Count)
+End Function
+
+
+Private Function ExtrairSegundoNumero(nome As String) As List(Of Integer)
+    ' Regex para capturar todos os blocos de números com ponto (ex: 6.2, 10.1)
+    Dim regex As New System.Text.RegularExpressions.Regex("\d+(\.\d+)*")
+    Dim matches As System.Text.RegularExpressions.MatchCollection = regex.Matches(nome)
+
+    ' Se tiver menos de 2 ocorrências, retorna zero como fallback
+    If matches.Count < 2 Then
+        Return New List(Of Integer)({0})
+    End If
+
+    ' Pega o SEGUNDO número encontrado
+    Dim valorAlvo As String = matches(1).Value ' matches(0) = 27, matches(1) = 6.2, etc.
+
+    Dim resultado As New List(Of Integer)
+    For Each parte As String In valorAlvo.Split("."c)
+        Dim num As Integer
+        If Integer.TryParse(parte.Trim(), num) Then
+            resultado.Add(num)
+        Else
+            resultado.Add(0)
+        End If
+    Next
+
+    Return resultado
+End Function
+
+
+' Função para remover o prefixo de 2 dígitos no início do nome da folha, se existir
+Private Function RemovePrefixo(nome As String) As String
+    ' Verifica se o nome começa com um número de 2 dígitos seguido de um traço (como "01-", "02-", etc.)
+    Dim prefixoRegex As New System.Text.RegularExpressions.Regex("^\d{2}-")
+    
+    ' Se encontrar um prefixo, remove-o
+    Return prefixoRegex.Replace(nome, "")
+End Function

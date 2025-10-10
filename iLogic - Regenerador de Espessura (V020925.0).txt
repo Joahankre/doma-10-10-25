@@ -1,0 +1,216 @@
+﻿Imports System.Windows.Forms
+Imports System.Globalization
+
+Sub Main()
+
+    If ThisApplication.ActiveDocumentType <> DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("Abra uma montagem (.iam) antes de rodar esta regra.", "Erro")
+        Return
+    End If
+
+    Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+    Dim oCompOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+
+    Dim compDocs As New Dictionary(Of String, PartDocument)
+    For Each occ As ComponentOccurrence In oCompOccs.AllLeafOccurrences
+        Try
+            Dim path As String = occ.Definition.Document.FullFileName
+            If Not compDocs.ContainsKey(path) Then
+                Dim partDoc As PartDocument = TryCast(occ.Definition.Document, PartDocument)
+                If partDoc IsNot Nothing AndAlso TypeOf partDoc.ComponentDefinition Is SheetMetalComponentDefinition Then
+                    compDocs.Add(path, partDoc)
+                End If
+            End If
+        Catch
+        End Try
+    Next
+
+    If compDocs.Count = 0 Then
+        MessageBox.Show("Nenhuma peça Sheet Metal encontrada na montagem.", "Aviso")
+        Return
+    End If
+
+    ' ==== Interface do Formulário ====
+
+    Dim frm As New Form With {
+        .Text = "Selecionar modelos",
+        .Width = 620,
+        .Height = 570,
+        .StartPosition = FormStartPosition.CenterScreen,
+        .FormBorderStyle = FormBorderStyle.Sizable
+    }
+
+    ' Lista de seleção
+    Dim lst As New CheckedListBox With {
+        .Dock = DockStyle.Fill,
+        .CheckOnClick = True
+    }
+
+    For Each kvp In compDocs
+        lst.Items.Add(kvp.Key)
+    Next
+
+    frm.Controls.Add(lst)
+
+    ' Painel inferior com botões
+    Dim pnlBotoes As New Panel With {
+        .Dock = DockStyle.Bottom,
+        .Height = 120
+    }
+
+    Dim btnSelAll As New Button With {
+        .Text = "Selecionar Todos",
+        .Dock = DockStyle.Top,
+        .Height = 35
+    }
+
+    Dim btnUnselAll As New Button With {
+        .Text = "Desmarcar Todos",
+        .Dock = DockStyle.Top,
+        .Height = 35
+    }
+
+    Dim btnOk As New Button With {
+        .Text = "Confirmar",
+        .Dock = DockStyle.Top,
+        .Height = 35
+    }
+
+    pnlBotoes.Controls.AddRange({btnOk, btnUnselAll, btnSelAll})
+    frm.Controls.Add(pnlBotoes)
+
+    ' ==== Eventos ====
+
+    AddHandler btnSelAll.Click, Sub()
+        For i = 0 To lst.Items.Count - 1
+            lst.SetItemChecked(i, True)
+        Next
+    End Sub
+
+    AddHandler btnUnselAll.Click, Sub()
+        For i = 0 To lst.Items.Count - 1
+            lst.SetItemChecked(i, False)
+        Next
+    End Sub
+
+    AddHandler btnOk.Click, Sub()
+        If lst.CheckedItems.Count = 0 Then
+            MessageBox.Show("Selecione ao menos um modelo.", "Aviso")
+            Return
+        End If
+        frm.DialogResult = DialogResult.OK
+        frm.Close()
+    End Sub
+
+    ' Mostrar formulário
+    If frm.ShowDialog() <> DialogResult.OK Then Return
+
+    ' Parâmetros alvo
+    Dim nomesAlvo As String() = {"thickness", "espessura", "espesura", "thikness", "thk", "esp"}
+
+    ' Processar documentos selecionados
+    For Each item As String In lst.CheckedItems
+        Try
+            Dim oPartDoc As PartDocument = compDocs(item)
+            Dim oDoc As Document = ThisApplication.Documents.Open(oPartDoc.FullFileName, True)
+            oDoc.Activate()
+
+            Dim compDef As PartComponentDefinition = CType(oDoc.ComponentDefinition, PartComponentDefinition)
+            Dim oParam As Parameter = GetSimilarParameterName(compDef.Parameters, nomesAlvo, 55)
+            If oParam Is Nothing Then Continue For
+
+            ' Renomear para "Thickness" se necessário
+            If oParam.Name.ToLowerInvariant() <> "thickness" Then
+                Try
+                    oParam.Name = "Thickness"
+                Catch ex As Exception
+                    MessageBox.Show("Falha ao renomear parâmetro em " & oDoc.DisplayName)
+                End Try
+            End If
+
+            ' Forçar reexportação como propriedade
+            Try
+                oParam.ExposedAsProperty = False
+                oParam.ExposedAsProperty = True
+            Catch
+            End Try
+
+            Dim valorNumerico As Double = Convert.ToDouble(oParam.Value)
+
+            ' Corrigir valores baixos
+            If valorNumerico < 1 Then
+                Dim corrigido = valorNumerico * 10
+                If corrigido = Math.Round(corrigido) AndAlso corrigido Mod 5 = 0 Then
+                    valorNumerico = corrigido
+                End If
+            End If
+
+            ' Atualizar iProperty
+            Dim props As PropertySet = oPartDoc.PropertySets.Item("Inventor User Defined Properties")
+            Try
+                props.Item("THICKNESS").Value = valorNumerico.ToString("F2", CultureInfo.CurrentCulture)
+            Catch
+                props.Add(valorNumerico.ToString("F2", CultureInfo.CurrentCulture), "THICKNESS")
+            End Try
+
+            oPartDoc.Save()
+            oPartDoc.Close(True)
+
+        Catch ex As Exception
+            MessageBox.Show("Erro ao processar: " & item & vbCrLf & ex.Message)
+        End Try
+    Next
+
+    MessageBox.Show("Espessuras atualizadas com sucesso.", "Concluído")
+End Sub
+
+' ========== FUNÇÕES AUXILIARES ==========
+
+Function GetSimilarParameterName(paramList As Parameters, palavrasAlvo As String(), Optional threshold As Integer = 55) As Parameter
+    Dim bestParam As Parameter = Nothing
+    Dim bestScore As Integer = 0
+
+    For Each param As Parameter In paramList
+        Dim nomeParam = param.Name.ToLowerInvariant()
+        For Each alvo In palavrasAlvo
+            Dim score = GetSimilarityPercent(nomeParam, alvo.ToLowerInvariant())
+            If score >= threshold AndAlso score > bestScore Then
+                bestScore = score
+                bestParam = param
+            End If
+        Next
+    Next
+
+    Return bestParam
+End Function
+
+Function GetSimilarityPercent(str1 As String, str2 As String) As Integer
+    Dim distance = LevenshteinDistance(str1, str2)
+    Dim maxLen = Math.Max(str1.Length, str2.Length)
+    If maxLen = 0 Then Return 100
+    Return CInt((1.0 - distance / maxLen) * 100)
+End Function
+
+Function LevenshteinDistance(s As String, t As String) As Integer
+    Dim n As Integer = s.Length
+    Dim m As Integer = t.Length
+    Dim d(n, m) As Integer
+
+    If n = 0 Then Return m
+    If m = 0 Then Return n
+
+    For i = 0 To n : d(i, 0) = i : Next
+    For j = 0 To m : d(0, j) = j : Next
+
+    For i = 1 To n
+        For j = 1 To m
+            Dim cost = If(s(i - 1) = t(j - 1), 0, 1)
+            d(i, j) = Math.Min(Math.Min(
+                d(i - 1, j) + 1,
+                d(i, j - 1) + 1),
+                d(i - 1, j - 1) + cost)
+        Next
+    Next
+
+    Return d(n, m)
+End Function

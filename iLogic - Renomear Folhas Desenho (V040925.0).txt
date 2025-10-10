@@ -1,0 +1,334 @@
+﻿Sub Main()
+    If Not TypeOf ThisDoc.Document Is DrawingDocument Then Exit Sub
+
+    Dim dwgDoc As DrawingDocument = ThisDoc.Document
+    Dim DebugMode As Boolean = False
+    Dim NomeMaxDescricao As Integer = 50
+
+    ' Obtem todos os nomes das folhas
+    Dim allSheetNames As New List(Of String)
+    For Each sht As Sheet In dwgDoc.Sheets
+        allSheetNames.Add(sht.Name)
+    Next
+
+    ' Seleção múltipla com checkboxes e filtro por prefixo
+    Dim selectedSheets As IEnumerable(Of Object) = MultiSelectListBoxWithPrefixFilter("Selecione as folhas para renomear:", allSheetNames, Nothing, "Renomear Folhas", "Folhas do desenho")
+    If selectedSheets Is Nothing OrElse selectedSheets.Count = 0 Then
+        System.Windows.Forms.MessageBox.Show("Nenhuma folha foi selecionada.")
+        Exit Sub
+    End If
+
+    If selectedSheets.Contains("**[Selecionar Todas]**") Then
+        selectedSheets = dwgDoc.Sheets.Cast(Of Sheet).Select(Function(s) s.Name).ToList()
+    End If
+
+    Dim BOMRows As BOMRowsEnumerator = GetBOMRows()
+    If BOMRows Is Nothing Then
+        System.Windows.Forms.MessageBox.Show("Erro ao obter o BOM da montagem principal.")
+        Exit Sub
+    End If
+
+    Dim renomeadas As New System.Text.StringBuilder
+    Dim novosNomes As New List(Of String)
+
+    For Each dwgSheet As Sheet In dwgDoc.Sheets
+        If selectedSheets.Contains(dwgSheet.Name) Then
+            Try
+                If dwgSheet.DrawingViews.Count > 0 Then
+                    Dim refView As DrawingView = Nothing
+Dim refDoc As Document = Nothing
+
+For Each view As DrawingView In dwgSheet.DrawingViews
+    Try
+        Dim tempDoc As Document = View.ReferencedDocumentDescriptor.ReferencedDocument
+
+        ' Verifica se a vista não é explodida (.ipn) e se o documento é válido
+        If tempDoc IsNot Nothing AndAlso _
+           (tempDoc.DocumentType = DocumentTypeEnum.kPartDocumentObject Or _
+            tempDoc.DocumentType = DocumentTypeEnum.kAssemblyDocumentObject) Then
+
+            refView = View
+            refDoc = tempDoc
+            Exit For
+        End If
+
+    Catch
+        ' Ignora vistas inválidas
+    End Try
+Next
+
+If refView Is Nothing OrElse refDoc Is Nothing Then
+    System.Windows.Forms.MessageBox.Show("Nenhuma vista válida encontrada na folha '" & dwgSheet.Name & "'. Pulando...")
+    Continue For
+End If
+                    Dim docFName As String = System.IO.Path.GetFileName(refDoc.FullFileName)
+
+                    
+                    Dim codPeca As String = SanitizeText(SafeGetPropertyValue(refDoc, "Design Tracking Properties", "Número da peça"))
+                    If codPeca = "X" Then codPeca = SanitizeText(SafeGetPropertyValue(refDoc, "Design Tracking Properties", "Part Number"))
+
+                   
+                    Dim categoryRaw As String = ""
+                    Try
+                        categoryRaw = iProperties.Value(docFName, "Summary", "Category")
+                    Catch
+                        categoryRaw = ""
+                    End Try
+
+                    Dim categoria As String
+                    If InStr(categoryRaw, " - ") > 0 Then
+                        Dim parts() As String = Split(categoryRaw, " - ")
+                        categoria = Trim(parts(0)) ' Primeiro item
+                    Else
+                        categoria = Trim(categoryRaw)
+                    End If
+
+                    If categoria = "" Then categoria = "N-A"
+                    ' === FIM DA NOVA LÓGICA ===
+
+                    Dim itemBOM As String = SearchBOMByPartNumber(BOMRows, codPeca)
+                    If itemBOM = "" Then itemBOM = "N-A"
+
+                    If DebugMode Then
+                        System.Windows.Forms.MessageBox.Show("Doc: " & docFName & vbCrLf & "Descrição: " & descricao & vbCrLf & "Código: " & codPeca & vbCrLf & "Item BOM: " & itemBOM)
+                    End If
+
+                    If categoria = "N-A" Or descricao = "X" Or codPeca = "X" Then Continue For
+
+                    
+
+                    Dim novoNome As String = categoria & " - " & itemBOM & " - " & codPeca
+                    If IsAssemblyDocument(docFName) And Not novoNome.EndsWith("ASS'Y") Then
+                        novoNome &= " ASS'Y"
+                    End If
+
+                    If novosNomes.Contains(novoNome) Then
+                        novoNome &= " (" & Now.Ticks.ToString().Substring(10) & ")"
+                    End If
+
+                    novosNomes.Add(novoNome)
+                    renomeadas.AppendLine("• " & dwgSheet.Name & " → " & novoNome)
+                    dwgSheet.Name = novoNome
+                End If
+            Catch ex As Exception
+                System.Windows.Forms.MessageBox.Show("Erro ao renomear a folha '" & dwgSheet.Name & "': " & ex.Message)
+            End Try
+        End If
+    Next
+
+    ShowFormattedResults(renomeadas.ToString())
+End Sub
+
+' =========================== INTERFACE COM CHECKEDLISTBOX E FILTRO DE PREFIXO ===========================
+Function MultiSelectListBoxWithPrefixFilter(Optional Instructions As String = "", Optional Items As IEnumerable = Nothing, Optional DefaultValue As Object = Nothing, Optional Title As String = "", Optional ListName As String = "") As IEnumerable(Of Object)
+    Dim form As New System.Windows.Forms.Form With {
+        .Text = If(Title <> "", Title, "Seleção de Itens"),
+        .Width = 600,
+        .Height = 700,
+        .StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+    }
+
+    Dim label As New System.Windows.Forms.Label With {
+        .Text = Instructions,
+        .Dock = System.Windows.Forms.DockStyle.Top,
+        .Height = 20
+    }
+    form.Controls.Add(label)
+
+    Dim clb As New System.Windows.Forms.CheckedListBox With {
+        .CheckOnClick = True,
+        .Dock = System.Windows.Forms.DockStyle.Top,
+        .Height = 450
+    }
+    form.Controls.Add(clb)
+
+   
+
+    ' Caixa de texto para filtro de prefixo
+    Dim prefixTextBox As New System.Windows.Forms.TextBox With {
+        .Dock = System.Windows.Forms.DockStyle.Top,
+        .Height = 25
+    }
+    form.Controls.Add(prefixTextBox)
+
+    ' Botão para aplicar filtro
+    Dim btnFilter As New System.Windows.Forms.Button With {
+        .Text = "Aplicar Filtro",
+        .Dock = System.Windows.Forms.DockStyle.Top,
+        .Height = 30
+    }
+    AddHandler btnFilter.Click, Sub(sender, e)
+                                   Dim prefix As String = prefixTextBox.Text.Trim()
+                                   clb.Items.Clear()
+                                   For Each item In Items
+                                       If prefix = "" OrElse item.ToString().StartsWith(prefix, StringComparison.CurrentCultureIgnoreCase) Then
+                                           clb.Items.Add(item, False)
+                                       End If
+                                   Next
+                               End Sub
+    form.Controls.Add(btnFilter)
+
+    ' Botão para marcar todas
+    Dim btnMarcarTodas As New System.Windows.Forms.Button With {
+        .Text = "Marcar Todas as Folhas",
+        .Dock = System.Windows.Forms.DockStyle.Top,
+        .Height = 30
+    }
+    AddHandler btnMarcarTodas.Click, Sub()
+                                          For i As Integer = 0 To clb.Items.Count - 1
+                                              clb.SetItemChecked(i, True)
+                                          Next
+                                      End Sub
+    form.Controls.Add(btnMarcarTodas)
+
+    ' Botão para desmarcar todas
+    Dim btnDesmarcarTodas As New System.Windows.Forms.Button With {
+        .Text = "Desmarcar Todas as Folhas",
+        .Dock = System.Windows.Forms.DockStyle.Top,
+        .Height = 30
+    }
+    AddHandler btnDesmarcarTodas.Click, Sub()
+                                            For i As Integer = 0 To clb.Items.Count - 1
+                                                clb.SetItemChecked(i, False)
+                                            Next
+                                        End Sub
+    form.Controls.Add(btnDesmarcarTodas)
+
+    ' Botão OK
+    Dim okButton As New System.Windows.Forms.Button With {
+        .Text = "Confirmar Seleção",
+        .Dock = System.Windows.Forms.DockStyle.Bottom,
+        .Height = 30
+    }
+    AddHandler okButton.Click, Sub() form.DialogResult = System.Windows.Forms.DialogResult.OK
+    form.Controls.Add(okButton)
+
+    ' Preenche inicialmente a lista
+    For Each item In Items
+        clb.Items.Add(item, False)
+    Next
+
+    If form.ShowDialog() = System.Windows.Forms.DialogResult.OK Then
+        Dim selectedItems As New List(Of Object)
+        For Each item In clb.CheckedItems
+            selectedItems.Add(item)
+        Next
+        Return selectedItems
+    Else
+        Return Nothing
+    End If
+End Function
+
+' ===============================================================================
+
+Function GetBOMRows() As BOMRowsEnumerator
+    Try
+        Dim dwgDoc As DrawingDocument = ThisDoc.Document
+        Dim firstSheet As Sheet = dwgDoc.Sheets.Item(1)
+        If firstSheet.DrawingViews.Count = 0 Then Return Nothing
+
+        Dim refDoc As Document = firstSheet.DrawingViews(1).ReferencedDocumentDescriptor.ReferencedDocument
+        If Not TypeOf refDoc Is AssemblyDocument Then Return Nothing
+
+        Dim asmDoc As AssemblyDocument = refDoc
+        With asmDoc.ComponentDefinition.BOM
+            .StructuredViewEnabled = True
+            .StructuredViewFirstLevelOnly = False
+            Dim bomView As BOMView = Nothing
+            For Each view As bomView In .BOMViews
+                If View.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
+                    bomView = View
+                    Exit For
+                End If
+            Next
+            If bomView Is Nothing Then Return Nothing
+            Return bomView.BOMRows
+        End With
+    Catch
+        Return Nothing
+    End Try
+End Function
+
+Function SanitizeText(inputText As String) As String
+    If inputText Is Nothing Then Return ""
+
+    ' Remove caracteres inválidos para nomes de arquivos e propriedades
+    Dim invalidChars As String = "<>:,""\/|?*{}[]()'´`"
+    For Each c As Char In invalidChars
+        inputText = inputText.Replace(c, "_")
+    Next
+
+    ' Remove espaços extras
+    inputText = System.Text.RegularExpressions.Regex.Replace(inputText, "\s+", " ")
+
+    ' Remove espaços no início/fim
+    Return inputText.Trim()
+End Function
+
+
+Function SafeGetPropertyValue(doc As Document, propSetName As String, propName As String) As String
+    Try
+        Return doc.PropertySets.Item(propSetName).Item(propName).Value
+    Catch
+        Return "X"
+    End Try
+End Function
+
+Function SearchBOMByPartNumber(rows As BOMRowsEnumerator, targetPartNumber As String) As String
+    ' Sanitize a entrada
+    Dim targetSanitized As String = SanitizeText(targetPartNumber).Trim().ToUpper()
+
+    For Each Row As BOMRow In rows
+        Try
+            If Row.ComponentDefinitions.Count = 0 Then Continue For
+
+            Dim def As ComponentDefinition = Row.ComponentDefinitions.Item(1)
+            Dim doc As Document = def.Document
+            Dim rowPartNumber As String = ""
+
+            Try
+                rowPartNumber = doc.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value
+            Catch
+                rowPartNumber = ""
+            End Try
+
+            Dim rowSanitized As String = SanitizeText(rowPartNumber).Trim().ToUpper()
+
+            If rowSanitized = targetSanitized Then
+                Return Row.ItemNumber
+            End If
+
+            If Not Row.ChildRows Is Nothing Then
+                Dim childResult As String = SearchBOMByPartNumber(Row.ChildRows, targetPartNumber)
+                If childResult <> "" Then Return childResult
+            End If
+        Catch
+        End Try
+    Next
+
+    Return ""
+End Function
+
+
+
+Function IsAssemblyDocument(docName As String) As Boolean
+    Return UCase(System.IO.Path.GetExtension(docName)) = ".IAM"
+End Function
+
+Sub ShowFormattedResults(message As String)
+    Dim form As New System.Windows.Forms.Form With {
+        .Text = "RESULTADO DA RENOMEAÇÃO",
+        .Width = 1500,
+        .Height = 800
+    }
+
+    Dim richText As New System.Windows.Forms.RichTextBox With {
+        .Dock = System.Windows.Forms.DockStyle.Fill,
+        .ReadOnly = True
+    }
+    richText.AppendText("RENOMEAÇÃO CONCLUÍDA:" & vbCrLf & vbCrLf)
+    richText.AppendText(message)
+
+    form.Controls.Add(richText)
+    form.ShowDialog()
+End Sub

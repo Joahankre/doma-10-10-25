@@ -1,0 +1,874 @@
+Imports System.Windows.Forms
+Imports Inventor
+Imports System.Drawing
+Sub Main()
+    ' Verificação do documento ativo
+    If ThisApplication.ActiveDocument Is Nothing OrElse _
+       ThisApplication.ActiveDocument.DocumentType <> DocumentTypeEnum.kDrawingDocumentObject Then
+        MessageBox.Show("Este script deve ser executado em um documento de desenho (.idw).", _
+                        "Documento inválido", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim drawingDoc As DrawingDocument = CType(ThisApplication.ActiveDocument, DrawingDocument)
+    Dim assemblyDoc As AssemblyDocument = GetAssemblyFromFirstSheet(drawingDoc)
+    Dim bomRows As BOMRowsEnumerator = If(assemblyDoc IsNot Nothing, GetBOMRows(drawingDoc), Nothing)
+
+    ' Criar formulário principal
+    Dim form As New Form() With {
+        .Text = "Gestão de Páginas de Desenho",
+        .Width = 1400,
+        .Height = 800,
+        .StartPosition = FormStartPosition.CenterScreen
+    }
+
+    Dim splitContainer As New SplitContainer() With {
+        .Dock = DockStyle.Fill,
+        .Orientation = Orientation.Vertical,
+        .SplitterDistance = form.Width \ 2
+    }
+    form.Controls.Add(splitContainer)
+
+    ' --- Painel esquerdo (TreeView + botões) ---
+    Dim panelEsqLayout As New TableLayoutPanel() With {.Dock = DockStyle.Fill, .RowCount = 2}
+    panelEsqLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+    panelEsqLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 100))
+    splitContainer.Panel1.Controls.Add(panelEsqLayout)
+
+    Dim treeView As New TreeView() With {.Dock = DockStyle.Fill, .CheckBoxes = True}
+    panelEsqLayout.Controls.Add(treeView, 0, 0)
+
+    Dim panelEsqBottom As New FlowLayoutPanel() With {
+        .Dock = DockStyle.Fill, 
+        .FlowDirection = FlowDirection.LeftToRight,
+        .AutoScroll = True
+    }
+    Dim btnInsert As New Button() With {.Text = "Inserir Vistas", .Width = 200}
+    Dim btnExpandir As New Button() With {.Text = "Expandir", .Width = 100}
+    Dim btnContrair As New Button() With {.Text = "Contrair", .Width = 100}
+    Dim btnSelecionarTudo As New Button() With {.Text = "Selecionar Tudo", .Width = 140}
+    Dim btnDesmarcarTudo As New Button() With {.Text = "Desmarcar Tudo", .Width = 140}
+    Dim btnAtualizarStatus As New Button() With {.Text = "Atualizar BOM", .Width = 140}
+    panelEsqBottom.Controls.AddRange({btnInsert, btnExpandir, btnContrair, btnSelecionarTudo, btnDesmarcarTudo, btnAtualizarStatus})
+    panelEsqLayout.Controls.Add(panelEsqBottom, 0, 1)
+
+    ' Preencher TreeView com BOM
+    If bomRows IsNot Nothing Then
+        For Each row As BOMRow In bomRows
+            AddBOMRowNode(Row, treeView.Nodes, drawingDoc)
+        Next
+        OrdenarTreeNodes(treeView.Nodes)
+        treeView.ExpandAll()
+    End If
+
+    ' --- Painel direito (ListView de folhas + botões) ---
+    Dim panelDirLayout As New TableLayoutPanel() With {.Dock = DockStyle.Fill, .RowCount = 2}
+    panelDirLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+    panelDirLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 100))
+    splitContainer.Panel2.Controls.Add(panelDirLayout)
+
+    Dim sheetListView As New ListView() With {
+        .Dock = DockStyle.Fill,
+        .CheckBoxes = True,
+        .View = System.Windows.Forms.View.Details,
+        .FullRowSelect = True
+    }
+   With sheetListView
+    .FullRowSelect = True
+    .GridLines = True
+    .BorderStyle = BorderStyle.FixedSingle
+    
+    .Columns.Add("Folha", 300, HorizontalAlignment.Left)
+    .Columns.Add("Conferência", 200, HorizontalAlignment.Center)
+    .Columns.Add("QTDE PERSONALIZADA", 180, HorizontalAlignment.Center)
+End With
+
+    panelDirLayout.Controls.Add(sheetListView, 0, 0)
+	
+    Dim panelDirBottom As New FlowLayoutPanel() With {
+        .Dock = DockStyle.Fill,
+        .FlowDirection = FlowDirection.RightToLeft,
+        .AutoScroll = True
+    }
+    Dim btnSelectAll As New Button() With {.Text = "Selecionar Todas", .Width = 160}
+    Dim btnDeselectAll As New Button() With {.Text = "Desmarcar Todas", .Width = 160}
+    Dim btnSelectByPrefix As New Button() With {.Text = "Selecionar por Prefixo", .Width = 180}
+    Dim btnAtualizarFolhas As New Button() With {.Text = "Atualizar Folhas", .Width = 160}
+    Dim btnExcluirFolhas As New Button() With {.Text = "Excluir Selecionadas", .Width = 200}
+    Dim btnCopiarFolhas As New Button() With {.Text = "Copiar Selecionadas", .Width = 200}
+    panelDirBottom.Controls.AddRange({btnCopiarFolhas, btnExcluirFolhas, btnAtualizarFolhas, btnSelectByPrefix, btnDeselectAll, btnSelectAll})
+    panelDirLayout.Controls.Add(panelDirBottom, 0, 1)
+
+    ' Inicializa lista de folhas
+    AtualizarListaDeFolhas(sheetListView, drawingDoc)
+
+    ' --- Handlers dos botões ---
+    AddHandler btnAtualizarFolhas.Click, Sub()
+        AtualizarListaDeFolhas(sheetListView, drawingDoc)
+    End Sub
+
+    AddHandler btnCopiarFolhas.Click, Sub()
+        CopiarFolhasSelecionadas(sheetListView, drawingDoc)
+        AtualizarListaDeFolhas(sheetListView, drawingDoc)
+    End Sub
+
+    AddHandler btnExcluirFolhas.Click, Sub()
+        ExcluirFolhasSelecionadas(sheetListView, drawingDoc)
+        AtualizarListaDeFolhas(sheetListView, drawingDoc)
+    End Sub
+
+    AddHandler btnSelectAll.Click, Sub()
+        For Each item As ListViewItem In sheetListView.Items
+            item.Checked = True
+        Next
+    End Sub
+	AddHandler btnInsert.Click, Sub()
+    Dim nodesSelecionados = GetCheckedNodes(treeView.Nodes)
+    If nodesSelecionados.Count = 0 Then
+        MessageBox.Show("Selecione ao menos um item na BOM.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    ' 🔹 Aqui está a verificação inteligente
+    Dim arquivosComVistas = ObterArquivosComVistas(drawingDoc)
+
+    For Each node As TreeNode In nodesSelecionados
+        Dim tag = TryCast(node.Tag, Tuple(Of String, String, String))
+        If tag IsNot Nothing Then
+            InsertBaseViewUsingCopiedSheet(drawingDoc, tag.Item1, tag.Item2, tag.Item3, arquivosComVistas)
+            arquivosComVistas.Add(tag.Item1) ' ✅ Marcar que já foi inserida, para as próximas iterações
+        End If
+    Next
+
+    AtualizarListaDeFolhas(sheetListView, drawingDoc)
+End Sub
+
+	AddHandler btnAtualizarFolhas.Click, Sub()
+    AtualizarFolhasEBOM(sheetListView, treeView, drawingDoc)
+End Sub
+AddHandler btnAtualizarStatus.Click, Sub()
+    AtualizarFolhasEBOM(sheetListView, treeView, drawingDoc)
+End Sub
+
+
+
+    AddHandler btnDeselectAll.Click, Sub()
+        For Each item As ListViewItem In sheetListView.Items
+            item.Checked = False
+        Next
+    End Sub
+
+    AddHandler btnSelectByPrefix.Click, Sub()
+        Dim prefixo As String = InputBox("Digite o prefixo:", "Selecionar por Prefixo")
+        If prefixo Is Nothing Then Return
+        If prefixo.Length < 2 Then
+            MessageBox.Show("Digite ao menos 2 caracteres.", "Prefixo inválido", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        For Each item As ListViewItem In sheetListView.Items
+            If item.Text.ToUpper().StartsWith(prefixo.ToUpper()) Then
+                item.Checked = True
+            End If
+        Next
+    End Sub
+
+    AddHandler btnExpandir.Click, Sub()
+        treeView.ExpandAll()
+    End Sub
+
+    AddHandler btnContrair.Click, Sub()
+        treeView.CollapseAll()
+    End Sub
+
+    AddHandler btnSelecionarTudo.Click, Sub()
+        SetCheckState(treeView.Nodes, True)
+    End Sub
+
+    AddHandler btnDesmarcarTudo.Click, Sub()
+        SetCheckState(treeView.Nodes, False)
+    End Sub
+
+    AddHandler btnAtualizarStatus.Click, Sub()
+        treeView.Nodes.Clear()
+        If bomRows IsNot Nothing Then
+            For Each row As BOMRow In bomRows
+                AddBOMRowNode(Row, treeView.Nodes, drawingDoc)
+            Next
+            OrdenarTreeNodes(treeView.Nodes)
+            treeView.ExpandAll()
+        End If
+    End Sub
+
+    ' Mostrar o formulário
+    form.ShowDialog()
+End Sub
+
+
+' === Métodos auxiliares ===
+
+Sub AtualizarListaDeFolhas(sheetListView As ListView, drawingDoc As DrawingDocument)
+    sheetListView.Items.Clear()
+
+    ' Adiciona as colunas, se ainda não existirem
+    If sheetListView.Columns.Count = 0 Then
+        sheetListView.Columns.Add("Folha", 300, HorizontalAlignment.Left)
+        sheetListView.Columns.Add("Conferência", 200, HorizontalAlignment.Left)
+    End If
+
+    ' Mapeamento: caminho do documento referenciado -> lista de folhas onde aparece
+    Dim mapaDeReferencias As New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+
+    ' Coletar os arquivos referenciados em cada folha
+    For Each folha As Sheet In drawingDoc.Sheets
+        For Each vista As DrawingView In folha.DrawingViews
+            Try
+                Dim doc = vista.ReferencedDocumentDescriptor.ReferencedDocument
+                If doc IsNot Nothing Then
+                    Dim caminho As String = doc.FullFileName
+                    If Not mapaDeReferencias.ContainsKey(caminho) Then
+                        mapaDeReferencias(caminho) = New List(Of String)
+                    End If
+                    If Not mapaDeReferencias(caminho).Contains(folha.Name) Then
+                        mapaDeReferencias(caminho).Add(folha.Name)
+                    End If
+                End If
+            Catch
+                ' Ignorar vistas sem documento
+            End Try
+        Next
+    Next
+
+    ' Preencher o ListView
+    For Each folha As Sheet In drawingDoc.Sheets
+        Dim arquivosReferenciados As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+
+        For Each vista As DrawingView In folha.DrawingViews
+            Try
+                Dim doc = vista.ReferencedDocumentDescriptor.ReferencedDocument
+                If doc IsNot Nothing Then
+                    arquivosReferenciados.Add(doc.FullFileName)
+                End If
+            Catch
+                ' Ignorar
+            End Try
+        Next
+
+        Dim status As String
+
+        If arquivosReferenciados.Count = 0 Then
+            status = "🚫 Vazia"
+        Else
+            ' Coletar todas as folhas onde os arquivos aparecem
+            Dim todasPaginas As New List(Of String)
+            For Each arquivo In arquivosReferenciados
+                If mapaDeReferencias.ContainsKey(arquivo) Then
+                    todasPaginas.AddRange(mapaDeReferencias(arquivo))
+                End If
+            Next
+
+            ' Remover duplicatas e ordenar
+            todasPaginas = todasPaginas.Distinct().OrderBy(Function(n) n).ToList()
+
+            If todasPaginas.Count = 1 Then
+                status = "✔️ Pág: " & ExtrairNumeroPagina(todasPaginas(0))
+            Else
+                Dim paginasFormatadas = todasPaginas.Select(Function(n) ExtrairNumeroPagina(n)).ToList()
+                status = "🔁 Pág: " & String.Join(", ", paginasFormatadas.ToArray())
+            End If
+        End If
+
+        ' Adiciona o item no ListView
+        Dim item As New ListViewItem(folha.Name)
+        item.SubItems.Add(status)
+
+' Valor padrão da propriedade personalizada
+Dim qtdePersonalizada As String = "-"
+
+' Procurar a propriedade personalizada no primeiro documento referenciado da folha
+For Each vista As DrawingView In folha.DrawingViews
+    Try
+        Dim doc = vista.ReferencedDocumentDescriptor.ReferencedDocument
+        If doc IsNot Nothing Then
+            Dim props As PropertySet = doc.PropertySets.Item("Inventor User Defined Properties")
+            Dim prop As Inventor.Property = Nothing
+
+            Try
+                prop = props.Item("QTDE PERSONALIZADA")
+                If prop IsNot Nothing AndAlso prop.Value IsNot Nothing Then
+                    qtdePersonalizada = prop.Value.ToString()
+                End If
+            Catch
+                ' Propriedade não encontrada — ignora
+            End Try
+
+            Exit For ' usar apenas o primeiro documento encontrado
+        End If
+    Catch
+        ' Ignora erros
+    End Try
+Next
+
+' Adiciona ao ListView
+' Formata qtdePersonalizada se for número
+Dim qtdeFormatada As String = qtdePersonalizada
+Dim valorInt As Integer
+If Integer.TryParse(qtdePersonalizada, valorInt) Then
+    qtdeFormatada = valorInt.ToString("D2") ' ex: 1 → 01
+End If
+
+' Adiciona ao ListView
+item.SubItems.Add(qtdeFormatada)
+
+
+
+        ' Marcado por padrão (você pode ajustar)
+        item.Checked = False
+
+        sheetListView.Items.Add(item)
+    Next
+End Sub
+
+
+Function ExtrairNumeroPagina(nome As String) As String
+    If nome.Contains(":") Then
+        Return nome.Substring(nome.IndexOf(":") + 1).Trim().PadLeft(2, "0"c)
+    End If
+    Return nome
+End Function
+
+
+Sub CopiarFolhasSelecionadas(sheetListView As ListView, drawingDoc As DrawingDocument)
+    Dim selectedSheets = sheetListView.CheckedItems.Cast(Of ListViewItem)().Select(Function(i) i.Text).ToList()
+    If selectedSheets.Count = 0 Then
+        MessageBox.Show("Selecione ao menos uma folha para copiar.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim browserPane As BrowserPane = GetBrowserPane(drawingDoc)
+    If browserPane Is Nothing Then
+        MessageBox.Show("Não foi possível acessar o painel do navegador de folhas.", "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Return
+    End If
+
+    Dim tempDrawingDoc As DrawingDocument = Nothing
+    Dim oSheets As Sheets = drawingDoc.Sheets
+    Dim mapOrigToCopy As New Dictionary(Of Sheet, Sheet)
+
+    For Each nome In selectedSheets
+        Try
+            Dim shOrig As Sheet = oSheets.Item(nome)
+            If tempDrawingDoc Is Nothing Then
+                tempDrawingDoc = CType(ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject, , False), DrawingDocument)
+            End If
+
+            Dim tempSheet As Sheet = Nothing
+            Try
+                tempSheet = shOrig.CopyTo(tempDrawingDoc)
+            Catch ex1 As Exception
+                tempSheet = Nothing
+            End Try
+
+            Dim shCopia As Sheet = Nothing
+
+            If tempSheet IsNot Nothing Then
+                Try
+                    shCopia = tempSheet.CopyTo(drawingDoc)
+                Catch ex2 As Exception
+                    shCopia = Nothing
+                End Try
+            End If
+
+            ' Fallback direto
+            If shCopia Is Nothing Then
+                Try
+                    Dim qtdAntes = oSheets.Count
+                    shOrig.CopyTo(oSheets)
+                    For j As Integer = qtdAntes + 1 To oSheets.Count
+                        Dim tempSh As Sheet = oSheets.Item(j)
+                        If tempSh.Name <> shOrig.Name Then
+                            shCopia = tempSh
+                            Exit For
+                        End If
+                    Next
+                    If shCopia Is Nothing Then
+                        MessageBox.Show("Não foi possível localizar a cópia de: " & nome, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                        Continue For
+                    End If
+                Catch ex3 As Exception
+                    MessageBox.Show("Erro ao copiar folha '" & nome & "': " & ex3.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                    Continue For
+                End Try
+            End If
+
+            mapOrigToCopy.Add(shOrig, shCopia)
+
+        Catch ex As Exception
+            MessageBox.Show("Erro inesperado ao copiar '" & nome & "': " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    Next
+
+    If tempDrawingDoc IsNot Nothing Then
+        Try : tempDrawingDoc.Close(True) : Catch : End Try
+    End If
+
+    ' Reordenar cada cópia após original
+    For Each kvp In mapOrigToCopy
+        Try
+            Dim nodeOrig = browserPane.GetBrowserNodeFromObject(kvp.Key)
+            Dim nodeCopia = browserPane.GetBrowserNodeFromObject(kvp.Value)
+            If nodeOrig IsNot Nothing AndAlso nodeCopia IsNot Nothing Then
+                browserPane.Reorder(nodeOrig, False, nodeCopia)
+            End If
+        Catch ex As Exception
+
+            MessageBox.Show("Erro ao reposicionar cópia de '" & kvp.Key.Name & "': " & ex.Message, "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End Try
+    Next
+
+    drawingDoc.Update()
+    MessageBox.Show("Folhas copiadas com sucesso.", "Sucesso", MessageBoxButtons.OK, MessageBoxIcon.Information)
+End Sub
+
+Private Function GetBrowserPane(drawingDoc As DrawingDocument) As BrowserPane
+    Try : Return drawingDoc.BrowserPanes.Item("Modelo") : Catch : End Try
+    Try : Return drawingDoc.BrowserPanes.Item("Model") : Catch : End Try
+    Try : Return drawingDoc.BrowserPanes.Item(1) : Catch : End Try
+    Return Nothing
+End Function
+
+
+Sub ExcluirFolhasSelecionadas(sheetListView As ListView, drawingDoc As DrawingDocument)
+    Dim selectedSheets = sheetListView.CheckedItems.Cast(Of ListViewItem)().Select(Function(i) i.Text).ToList()
+    If selectedSheets.Count = 0 Then
+        MessageBox.Show("Selecione ao menos uma folha para excluir.", "Atenção", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim confirmResult = MessageBox.Show("Tem certeza que deseja excluir as folhas selecionadas?" & vbCrLf & _
+                                        "Essa ação não pode ser desfeita.", _
+                                        "Confirmar Exclusão", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+    If confirmResult <> DialogResult.Yes Then
+        Return
+    End If
+
+    For i As Integer = drawingDoc.Sheets.Count To 1 Step -1
+        Dim sh As Sheet = drawingDoc.Sheets.Item(i)
+        If selectedSheets.Contains(sh.Name) Then
+            Try
+                sh.Delete()
+            Catch ex As Exception
+                MessageBox.Show("Erro ao excluir folha '" & sh.Name & "': " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+        End If
+    Next
+
+    MessageBox.Show("Folhas excluídas com sucesso.", "Sucesso", MessageBoxButtons.OK, MessageBoxIcon.Information)
+End Sub
+
+Function GetAssemblyFromFirstSheet(drawingDoc As DrawingDocument) As AssemblyDocument
+    Try
+        Dim firstSheet As Sheet = drawingDoc.Sheets.Item(1)
+        If firstSheet.DrawingViews.Count = 0 Then Return Nothing
+        Dim baseDrawingView As DrawingView = firstSheet.DrawingViews.Item(1)
+        Dim refDocDescriptor = baseDrawingView.ReferencedDocumentDescriptor
+        If refDocDescriptor Is Nothing Then Return Nothing
+        Dim refDoc = refDocDescriptor.ReferencedDocument
+        If refDoc IsNot Nothing AndAlso refDoc.DocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+            Return CType(refDoc, AssemblyDocument)
+        End If
+    Catch ex As Exception
+        MessageBox.Show("Erro ao obter montagem da primeira folha: " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Try
+
+    Return Nothing
+End Function
+
+Function GetBOMRows(drawingDoc As DrawingDocument) As BOMRowsEnumerator
+    Try
+        If drawingDoc.Sheets.Count = 0 OrElse drawingDoc.Sheets.Item(1).DrawingViews.Count = 0 Then
+            Return Nothing
+        End If
+
+        Dim refDoc As Document = drawingDoc.Sheets.Item(1).DrawingViews.Item(1).ReferencedDocumentDescriptor.ReferencedDocument
+        If Not TypeOf refDoc Is AssemblyDocument Then Return Nothing
+
+        Dim asm As AssemblyDocument = CType(refDoc, AssemblyDocument)
+        Dim bom As BOM = asm.ComponentDefinition.BOM
+        bom.StructuredViewEnabled = True
+        bom.StructuredViewFirstLevelOnly = False
+
+        For Each bomView As BOMView In bom.BOMViews
+            If BOMView.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
+                Return BOMView.BOMRows
+            End If
+        Next
+    Catch ex As Exception
+        MessageBox.Show("Erro ao obter BOM Rows: " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Try
+
+    Return Nothing
+End Function
+
+Sub AddBOMRowNode(row As BOMRow, parent As TreeNodeCollection, drawingDoc As DrawingDocument)
+    Try
+        ' Ignorar elementos do Content Center e estruturas não normais
+        If row.ComponentDefinitions IsNot Nothing AndAlso row.ComponentDefinitions.Count > 0 Then
+            Dim defComp = row.ComponentDefinitions.Item(1)
+            If TypeOf defComp Is PartComponentDefinition Then
+                If CType(defComp, PartComponentDefinition).IsContentMember Then Return
+            End If
+            If defComp.BOMStructure <> BOMStructureEnum.kNormalBOMStructure Then Return
+        End If
+
+        ' Propriedades da peça
+        Dim docPath As String = ""
+        Dim partName As String = ""
+        Dim itemName As String = ""
+
+        Try
+            If row.ComponentDefinitions IsNot Nothing AndAlso row.ComponentDefinitions.Count > 0 Then
+                Dim doc = row.ComponentDefinitions.Item(1).Document
+                docPath = doc.FullFileName
+                Try
+                    partName = doc.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value
+                Catch
+                    partName = ""
+                End Try
+            End If
+        Catch
+        End Try
+
+        Try
+            itemName = row.Name
+        Catch
+            itemName = row.ItemNumber
+        End Try
+
+        Dim itemNumber As String = row.ItemNumber
+
+        ' Verificar se já existe vista dessa peça no desenho
+        Dim inDrawing As Boolean = False
+        Dim pages As New List(Of String)
+
+        For Each sh As Sheet In drawingDoc.Sheets
+            For Each vw As DrawingView In sh.DrawingViews
+                Try
+                    Dim rd = vw.ReferencedDocumentDescriptor.ReferencedDocument
+                    If rd IsNot Nothing AndAlso String.Equals(rd.FullFileName, docPath, StringComparison.OrdinalIgnoreCase) Then
+                        inDrawing = True
+                        Dim pageNum As String
+                        If sh.Name.Contains(":") Then
+                            pageNum = sh.Name.Substring(sh.Name.LastIndexOf(":") + 1).PadLeft(2, "0"c)
+                        Else
+                            pageNum = "01"
+                        End If
+                        If Not pages.Contains(pageNum) Then
+                            pages.Add(pageNum)
+                        End If
+                    End If
+                Catch
+                End Try
+            Next
+        Next
+        pages.Sort()
+
+        Dim status As String
+        Dim pageText As String = ""
+        If Not inDrawing Then
+            status = "🚫"
+        ElseIf pages.Count = 1 Then
+            status = "✔️"
+            pageText = "[Pág: " & pages(0) & "]"
+        Else
+            status = "🔵"
+            pageText = "[Pág: " & String.Join(", ", pages) & "]"
+        End If
+
+        Dim labelNumber As String = If(partName <> "", partName, itemNumber)
+        Dim nodeText As String = String.Format("({0}) {1} – {2} {3}", status, itemNumber, labelNumber, pageText)
+        Dim tagData = Tuple.Create(docPath, itemNumber, labelNumber)
+
+        Dim node As New TreeNode(nodeText) With {
+            .Tag = tagData,
+            .Name = itemNumber
+        }
+        parent.Add(node)
+
+        If row.ChildRows IsNot Nothing AndAlso row.ChildRows.Count > 0 Then
+            For Each childRow As BOMRow In row.ChildRows
+                AddBOMRowNode(childRow, node.Nodes, drawingDoc)
+            Next
+        End If
+
+    Catch
+        ' ignorar erros de nó
+    End Try
+End Sub
+
+Function GetCheckedNodes(nodes As TreeNodeCollection) As List(Of TreeNode)
+    Dim result As New List(Of TreeNode)
+    For Each n As TreeNode In nodes
+        If n.Checked Then result.Add(n)
+        If n.Nodes.Count > 0 Then
+            result.AddRange(GetCheckedNodes(n.Nodes))
+        End If
+    Next
+    Return result
+End Function
+
+Sub SetCheckState(nodes As TreeNodeCollection, state As Boolean)
+    For Each n As TreeNode In nodes
+        n.Checked = state
+        If n.Nodes.Count > 0 Then
+            SetCheckState(n.Nodes, state)
+        End If
+    Next
+End Sub
+
+Private Function CalcularEscalaIdeal(compDef As ComponentDefinition) As Double
+    Try
+        Dim oBox As Box = compDef.RangeBox
+        Dim largura As Double = Math.Abs(oBox.MaxPoint.X - oBox.MinPoint.X)
+        Dim altura As Double = Math.Abs(oBox.MaxPoint.Y - oBox.MinPoint.Y)
+        Dim profundidade As Double = Math.Abs(oBox.MaxPoint.Z - oBox.MinPoint.Z)
+
+        Dim tamanhoMaximo As Double = Math.Max(largura, Math.Max(altura, profundidade)) * 10
+        Dim areaUtil As Double = 180
+        Dim escala As Double = areaUtil / tamanhoMaximo
+
+        If escala >= 1 Then Return 1
+        If escala >= 0.5 Then Return 0.5
+        If escala >= 0.2 Then Return 0.2
+        If escala >= 0.1 Then Return 0.1
+        Return 0.05
+    Catch
+        Return 1
+    End Try
+End Function
+
+Sub OrdenarTreeNodes(nodes As TreeNodeCollection)
+    ' Copia os nós para uma lista temporária
+    Dim lista As New List(Of TreeNode)
+    For Each node As TreeNode In nodes
+        lista.Add(node)
+    Next
+
+    ' Ordena usando o comparador hierárquico
+    lista.Sort(Function(a, b)
+                   Return CompararHierarquia(a.Name, b.Name)
+               End Function)
+
+    ' Limpa a coleção original
+    nodes.Clear()
+
+    ' Reinsere os nós ordenados e chama recursivamente
+    For Each node As TreeNode In lista
+        nodes.Add(node)
+
+        ' Recursivamente ordenar os filhos
+        If node.Nodes.Count > 0 Then
+            OrdenarTreeNodes(node.Nodes)
+        End If
+    Next
+End Sub
+
+
+Function CompararHierarquia(a As String, b As String) As Integer
+    Dim partesA() As String = a.Split("."c)
+    Dim partesB() As String = b.Split("."c)
+
+    Dim maxLength As Integer = Math.Max(partesA.Length, partesB.Length)
+
+    For i As Integer = 0 To maxLength - 1
+        Dim valorA As Integer = If(i < partesA.Length, Integer.Parse(partesA(i)), 0)
+        Dim valorB As Integer = If(i < partesB.Length, Integer.Parse(partesB(i)), 0)
+
+        Dim resultado As Integer = valorA.CompareTo(valorB)
+        If resultado <> 0 Then
+            Return resultado
+        End If
+    Next
+
+    Return 0 ' São iguais
+End Function
+
+Sub InsertBaseViewUsingCopiedSheet(drawingDoc As DrawingDocument, partPath As String, itemNumber As String, labelNumber As String, arquivosComVistas As HashSet(Of String))
+
+    ' Verifica se a peça já tem vista em alguma folha
+    If arquivosComVistas.Contains(partPath) Then Return
+
+    Try
+        ' Abre o documento da peça
+        Dim partDoc As Document = Nothing
+        Try
+            partDoc = ThisApplication.Documents.Open(partPath, False)
+        Catch ex As Exception
+            MessageBox.Show("Erro ao abrir o arquivo da peça: " & partPath & vbCrLf & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End Try
+
+        ' Copia folha modelo
+        Dim folhaModelo As Sheet = Nothing
+        For Each folha As Sheet In drawingDoc.Sheets
+            If folha.Name.ToUpper().Contains("MODELO") Then
+                folhaModelo = folha
+                Exit For
+            End If
+        Next
+        If folhaModelo Is Nothing Then folhaModelo = drawingDoc.Sheets.Item(1)
+
+        Dim docTemp As DrawingDocument = CType(ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject, , False), DrawingDocument)
+        Dim folhaTemp As Sheet = folhaModelo.CopyTo(docTemp)
+        Dim novaFolha As Sheet = folhaTemp.CopyTo(drawingDoc)
+        docTemp.Close(True)
+
+        Dim nomeFolha As String = String.Format("{0} – {1}", itemNumber, labelNumber)
+        novaFolha.Name = SanitizarNomeFolha(nomeFolha)
+
+        ' Remove vistas existentes
+        For Each vw As DrawingView In novaFolha.DrawingViews.Cast(Of DrawingView).ToList()
+            vw.Delete()
+        Next
+        novaFolha.Activate()
+
+        ' Escala ideal
+        Dim escala As Double = 1.0
+        Dim cd As ComponentDefinition = Nothing
+        If TypeOf partDoc Is PartDocument Then
+            cd = CType(partDoc, PartDocument).ComponentDefinition
+        ElseIf TypeOf partDoc Is AssemblyDocument Then
+            cd = CType(partDoc, AssemblyDocument).ComponentDefinition
+        End If
+        If cd IsNot Nothing Then escala = CalcularEscalaIdeal(cd)
+
+        Dim tg As TransientGeometry = ThisApplication.TransientGeometry
+        Dim ptBase As Point2d = tg.CreatePoint2d(10, 10)
+
+        ' Insere vista base normal (peça dobrada)
+        Dim baseView As DrawingView = novaFolha.DrawingViews.AddBaseView(
+            partDoc,
+            ptBase,
+            escala,
+            ViewOrientationTypeEnum.kFrontViewOrientation,
+            DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle
+        )
+        baseView.DisplayTangentEdges = True
+
+        ' Se for chapa metálica, insere vista de padrão plano usando NameValueMap
+        If TypeOf cd Is SheetMetalComponentDefinition Then
+            Dim smDef As SheetMetalComponentDefinition = CType(cd, SheetMetalComponentDefinition)
+
+            ' Garante que o FlatPattern está gerado
+            If Not smDef.HasFlatPattern Then
+                smDef.Unfold()
+            End If
+
+            Try
+                smDef.FlatPattern.ExitEdit()
+            Catch
+                ' ignora se não estiver em modo edição
+            End Try
+
+            smDef.Document.Update()
+
+            ' Prepara opções para vista flat pattern
+            Dim baseViewOptions As NameValueMap = ThisApplication.TransientObjects.CreateNameValueMap()
+            baseViewOptions.Add("SheetMetalFoldedModel", False)  ' False para padrão plano (desdobrado)
+
+            ' Define posição da vista flat pattern (ao lado da base)
+            Dim ptFlat As Point2d = tg.CreatePoint2d(ptBase.X + baseView.Width * 2, ptBase.Y)
+
+            ' Insere vista flat pattern usando as opções
+            Dim flatView As DrawingView = novaFolha.DrawingViews.AddBaseView(
+                partDoc,
+                ptFlat,
+                escala,
+                ViewOrientationTypeEnum.kTopViewOrientation,
+                DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle,
+                "FlatPattern",
+                Nothing,
+                baseViewOptions
+            )
+
+        End If
+
+        ' Fecha a peça sem salvar alterações
+        Try : partDoc.Close(False) : Catch : End Try
+
+    Catch ex As Exception
+        MessageBox.Show("Erro ao inserir vista: " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Try
+
+End Sub
+
+
+Function SanitizarNomeFolha(nomeOriginal As String) As String
+    ' Lista de caracteres inválidos em nomes de folha
+    Dim caracteresInvalidos As Char() = {"<"c, ">"c, ":"c, """"c, "/"c, "\"c, "|"c, "?"c, "*"c, ","c}
+
+    ' Substituir caracteres inválidos por ponto
+    For Each c In caracteresInvalidos
+        nomeOriginal = nomeOriginal.Replace(c, "."c)
+    Next
+
+    ' Opcional: Remover espaços extras no início/fim
+    nomeOriginal = nomeOriginal.Trim()
+
+    Return nomeOriginal
+End Function
+
+Sub AtualizarFolhasEBOM(sheetListView As ListView, TreeView As TreeView, drawingDoc As DrawingDocument)
+    ' Atualiza folhas
+    AtualizarListaDeFolhas(sheetListView, drawingDoc)
+
+    ' Atualiza BOM
+    TreeView.Nodes.Clear()
+
+    Dim assemblyDoc As AssemblyDocument = GetAssemblyFromFirstSheet(drawingDoc)
+    Dim bomRows As BOMRowsEnumerator = If(assemblyDoc IsNot Nothing, GetBOMRows(drawingDoc), Nothing)
+
+    If bomRows IsNot Nothing Then
+        For Each Row As BOMRow In bomRows
+            AddBOMRowNode(Row, TreeView.Nodes, drawingDoc)
+        Next
+        OrdenarTreeNodes(TreeView.Nodes)
+        TreeView.ExpandAll()
+    End If
+End Sub
+Function ExtrairNumeroOrdenavel(texto As String) As Double
+    ' Extrai o primeiro número que encontrar no texto (ex: 1.2, 03, 10.5 etc)
+    Dim regex As New System.Text.RegularExpressions.Regex("\d+(\.\d+)?")
+    Dim match = regex.Match(texto)
+
+    If match.Success Then
+        Dim valor As Double
+        If Double.TryParse(match.Value, Globalization.NumberStyles.Any, Globalization.CultureInfo.InvariantCulture, valor) Then
+            Return valor
+        End If
+    End If
+
+    ' Caso não encontre um número, retorna um valor alto para ordenar no final
+    Return Double.MaxValue
+End Function
+
+Function ObterArquivosComVistas(drawingDoc As DrawingDocument) As HashSet(Of String)
+    Dim arquivos As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+
+    For Each folha In drawingDoc.Sheets.Cast(Of Sheet)()
+        For Each vista In folha.DrawingViews.Cast(Of DrawingView)()
+            Dim docVista As Document = Nothing
+
+            Try
+                docVista = vista.ReferencedDocumentDescriptor.ReferencedDocument
+            Catch
+                Continue For
+            End Try
+
+            If docVista IsNot Nothing Then
+                arquivos.Add(docVista.FullFileName)
+            End If
+        Next
+    Next
+
+    Return arquivos
+End Function
