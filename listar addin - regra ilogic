@@ -1,0 +1,31 @@
+Sub Main()
+
+    ' Lista os AddIns do Inventor
+    Dim addIns As ApplicationAddIns = ThisApplication.ApplicationAddIns
+    Dim resultado As New System.Text.StringBuilder()
+
+    For Each addIn As ApplicationAddIn In addIns
+        resultado.AppendLine("Nome: " & addIn.DisplayName)
+        resultado.AppendLine("ClientId: " & addIn.ClientId.ToString())
+        resultado.AppendLine("Ativado: " & addIn.Activated.ToString())
+        resultado.AppendLine("Descrição: " & addIn.Description)
+        resultado.AppendLine("--------------------------------------------------")
+    Next
+
+    ' Cria um formulário com TextBox para exibir e copiar o conteúdo
+    Dim frm As New System.Windows.Forms.Form()
+    frm.Text = "AddIns Carregados"
+    frm.Width = 800
+    frm.Height = 600
+
+    Dim tb As New System.Windows.Forms.TextBox()
+    tb.Multiline = True
+    tb.ScrollBars = System.Windows.Forms.ScrollBars.Both
+    tb.Dock = System.Windows.Forms.DockStyle.Fill
+    tb.ReadOnly = False ' Para permitir copiar
+    tb.Text = resultado.ToString()
+
+    frm.Controls.Add(tb)
+    frm.ShowDialog()
+
+End Sub
