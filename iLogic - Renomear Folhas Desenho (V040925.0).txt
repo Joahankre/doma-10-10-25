@@ -1,4 +1,4 @@
-﻿Sub Main()
+Sub Main()
     If Not TypeOf ThisDoc.Document Is DrawingDocument Then Exit Sub
 
     Dim dwgDoc As DrawingDocument = ThisDoc.Document
@@ -62,6 +62,11 @@ If refView Is Nothing OrElse refDoc Is Nothing Then
     Continue For
 End If
                     Dim docFName As String = System.IO.Path.GetFileName(refDoc.FullFileName)
+					
+					
+					
+					Dim descricao As String = SanitizeText(SafeGetPropertyValue(refDoc, "Design Tracking Properties", "Description"))
+
 
                     
                     Dim codPeca As String = SanitizeText(SafeGetPropertyValue(refDoc, "Design Tracking Properties", "Número da peça"))
